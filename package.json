@@ -1,5 +1,5 @@
 {
-  "name": "cluddlegraphsearch",
+  "name": "cluddlegraphs",
   "version": "1.5.0",
   "description": "Highlight graph search matches without hiding non-matching nodes.",
   "main": "main.js",
@@ -13,7 +13,7 @@
     "search",
     "highlight"
   ],
-  "author": "Cluddle Graph Search contributors",
+  "author": "Cluddle Graphs contributors",
   "license": "MIT",
   "devDependencies": {}
 }

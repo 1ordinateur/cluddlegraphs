@@ -5,16 +5,16 @@ const GRAPH_VIEW_TYPE = "graph";
 const LOCAL_GRAPH_VIEW_TYPE = "localgraph";
 const SEARCH_HIGHLIGHT_OPTION = "searchHighlightMode";
 const SEARCH_HIGHLIGHT_COLOR_OPTION = "searchHighlightColor";
-const SEARCH_HIGHLIGHT_TOGGLE_CLASS = "cluddlegraphsearch-search-highlight-toggle";
-const SEARCH_HIGHLIGHT_COLOR_CLASS = "cluddlegraphsearch-search-highlight-color";
-const SEARCH_HIGHLIGHT_COLOR_MARKER = "__cluddlegraphsearchSearchHit";
+const SEARCH_HIGHLIGHT_TOGGLE_CLASS = "cluddlegraphs-search-highlight-toggle";
+const SEARCH_HIGHLIGHT_COLOR_CLASS = "cluddlegraphs-search-highlight-color";
+const SEARCH_HIGHLIGHT_COLOR_MARKER = "__cluddlegraphsSearchHit";
 const SEARCH_HIGHLIGHT_DEFAULT_COLOR = "#ff2d55";
 const LEGACY_SEARCH_HIGHLIGHT_SENTINEL = { a: 1, rgb: 0xff00ff };
-const RESET_CONFIRM_BUTTON_CLASS = "cluddlegraphsearch-reset-confirm";
-const RESET_CONFIRMING_CLASS = "cluddlegraphsearch-reset-confirming";
+const RESET_CONFIRM_BUTTON_CLASS = "cluddlegraphs-reset-confirm";
+const RESET_CONFIRMING_CLASS = "cluddlegraphs-reset-confirming";
 const RESET_CONFIRM_TIMEOUT_MS = 5000;
 
-module.exports = class CluddleGraphSearchPlugin extends Plugin {
+module.exports = class CluddleGraphsPlugin extends Plugin {
   onload() {
     this.pendingLeaves = new WeakSet();
     this.enginePatches = new WeakMap();

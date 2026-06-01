@@ -1,6 +1,6 @@
-# Cluddle Graph Search
+# Cluddle Graphs
 
-Cluddle Graph Search adds a highlight mode to Obsidian's graph view search. It is designed for large vaults where the default graph search can be too destructive because non-matching nodes disappear from the graph.
+Cluddle Graphs adds a highlight mode to Obsidian's graph view search. It is designed for large vaults where the default graph search can be too destructive because non-matching nodes disappear from the graph.
 
 ![Graph search highlight controls](docs/graph-options.png)
 
@@ -40,7 +40,7 @@ This plugin only changes Obsidian graph and local graph views. It does not chang
 
 ## Privacy
 
-Cluddle Graph Search does not collect analytics, make network requests, or send vault data anywhere. All graph matching and highlighting runs locally inside Obsidian.
+Cluddle Graphs does not collect analytics, make network requests, or send vault data anywhere. All graph matching and highlighting runs locally inside Obsidian.
 
 ## Compatibility notes
 
@@ -53,10 +53,10 @@ The plugin avoids Node.js and Electron runtime APIs, so it is not marked desktop
 Clone or copy this repository into your vault's plugin folder:
 
 ```bash
-.obsidian/plugins/cluddlegraphsearch
+.obsidian/plugins/cluddlegraphs
 ```
 
-Then enable **Cluddle Graph Search** from **Settings -> Community plugins**.
+Then enable **Cluddle Graphs** from **Settings -> Community plugins**.
 
 ## Release checklist
 
