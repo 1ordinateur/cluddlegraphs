@@ -46,7 +46,7 @@ Cluddle Graphs does not collect analytics, make network requests, or send vault 
 
 Obsidian does not currently expose a public API for changing graph search rendering behavior. To provide hover-like highlighting without hiding non-matching nodes, this plugin uses a small, isolated compatibility layer around Obsidian's graph view objects. The implementation is intentionally scoped to open graph views, guarded with feature checks, and restored when the plugin unloads.
 
-The plugin avoids Node.js and Electron runtime APIs, so it is not marked desktop-only. Desktop and mobile graph behavior should be checked before each release.
+Cluddle Graphs is currently marked desktop-only. It does not use Node.js or Electron runtime APIs, but the graph rendering compatibility layer has not been verified against Obsidian mobile graph behavior. Mobile support should only be enabled after explicit mobile testing.
 
 ## Installation for development
 

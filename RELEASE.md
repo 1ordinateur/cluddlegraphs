@@ -40,4 +40,4 @@ Before submission, verify:
 - **Highlighted hit nodes** appears in **Display** and changes the direct-hit color.
 - Graph reset shows **Are you sure?** and does not reset until confirmed.
 - Disabling the plugin removes added controls and restores graph rendering.
-- Mobile graph behavior is tested if `isDesktopOnly` remains `false`.
+- Desktop graph and local graph behavior are tested. Mobile support remains disabled until Obsidian mobile graph behavior is explicitly verified.
