@@ -1,5 +1,37 @@
+.cluddlegraphs-canvas-options-group-summary {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  font-size: var(--font-ui-small, 13px);
+  font-weight: var(--font-semibold, 600);
+  line-height: var(--line-height-tight, 1.3);
+  min-height: 42px;
+}
+
 .cluddlegraphs-canvas-options-group-summary .collapse-icon {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  transform-origin: center;
   transition: transform var(--anim-duration-fast, 150ms) ease-in-out;
+}
+
+.cluddlegraphs-canvas-options-group-summary:not(.is-collapsed) .collapse-icon {
+  transform: rotate(0deg) !important;
+}
+
+.cluddlegraphs-canvas-options-group-summary.is-collapsed .collapse-icon {
+  transform: rotate(-90deg) !important;
+}
+
+.cluddlegraphs-canvas-options-group-summary .collapse-icon svg {
+  transform: none !important;
+}
+
+.cluddlegraphs-canvas-options-group-summary .tree-item-inner {
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
 }
 
 .cluddlegraphs-canvas-options-group-content.tree-item-children {

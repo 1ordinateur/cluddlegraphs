@@ -1031,6 +1031,8 @@ const CANVAS_CLOUD_PADDING = GRAPH_NODE_CENTER + 12;
 const CANVAS_CLOUD_ALPHA = 0.12;
 const CANVAS_CLOUD_LINE_ALPHA = 0.35;
 const CANVAS_CLOUD_LINE_WIDTH = 4;
+const CANVAS_CLOUD_MIN_MARGIN = 4;
+const CANVAS_CLOUD_MARGIN_RATIO = 0.12;
 const CANVAS_CLOUD_CORNER_SEGMENTS = 4;
 const CANVAS_CLOUD_CIRCLE_SEGMENTS = 20;
 
@@ -1118,6 +1120,9 @@ module.exports = class CanvasGraphController {
     const patch = renderer ? this.rendererPatches.get(renderer) : null;
     if (patch) {
       renderer.setData = patch.setData;
+      if (patch.changed) {
+        renderer.changed = patch.changed;
+      }
       this.rendererPatches.delete(renderer);
     }
 
@@ -1709,6 +1714,7 @@ module.exports = class CanvasGraphController {
     const syncCollapsedState = () => {
       const collapsed = groupEl.classList.contains("is-collapsed");
       summaryEl.classList.toggle("is-collapsed", collapsed);
+      iconEl?.classList.toggle("is-collapsed", collapsed);
       contentEl.style.display = collapsed ? "none" : "";
       summaryEl.setAttribute("aria-expanded", String(!collapsed));
       contentEl.setAttribute("aria-hidden", String(collapsed));
@@ -1824,6 +1830,7 @@ module.exports = class CanvasGraphController {
     }
 
     const originalSetData = renderer.setData;
+    const originalChanged = typeof renderer.changed === "function" ? renderer.changed : null;
     const controller = this;
     renderer.setData = function(data) {
       const canvasLinks = controller.applyCanvasLinksToGraphData(data, engine);
@@ -1831,8 +1838,15 @@ module.exports = class CanvasGraphController {
       controller.syncRenderer(engine, canvasLinks);
       return result;
     };
+    if (originalChanged) {
+      renderer.changed = function(...args) {
+        const result = originalChanged.apply(this, args);
+        controller.requestMembershipCloudSync(this);
+        return result;
+      };
+    }
 
-    this.rendererPatches.set(renderer, { setData: originalSetData });
+    this.rendererPatches.set(renderer, { setData: originalSetData, changed: originalChanged });
   }
 
   syncSearchMatches(engine, matchValue = true) {
@@ -1921,7 +1935,7 @@ module.exports = class CanvasGraphController {
     layer.clear?.();
     const clouds = this.getVisibleCanvasMembershipClouds(renderer);
     for (const cloud of clouds) {
-      this.drawMembershipCloud(layer, cloud.points, cloud.color);
+      this.drawMembershipCloud(layer, cloud.points, cloud.color, cloud.padding);
     }
   }
 
@@ -1977,6 +1991,7 @@ module.exports = class CanvasGraphController {
     const clouds = [];
     for (const [canvasPath, nodeIds] of Object.entries(this.canvasMemberships)) {
       const points = [];
+      const radii = [];
       const seen = new Set();
       for (const nodeId of nodeIds) {
         if (seen.has(nodeId)) {
@@ -1988,6 +2003,10 @@ module.exports = class CanvasGraphController {
         const point = this.getRendererNodePoint(renderer, node);
         if (point) {
           points.push(point);
+          const radius = this.getRendererNodeRadius(renderer, node);
+          if (radius !== null) {
+            radii.push(radius);
+          }
         }
       }
 
@@ -1998,6 +2017,7 @@ module.exports = class CanvasGraphController {
       clouds.push({
         canvasPath,
         points,
+        padding: this.getMembershipCloudPadding(radii),
         color: this.getCanvasMembershipCloudColor(renderer, canvasPath)
       });
     }
@@ -2030,6 +2050,45 @@ module.exports = class CanvasGraphController {
     }
 
     return this.toGraphPoint(node.x, node.y);
+  }
+
+  getRendererNodeRadius(renderer, node) {
+    const layer = this.cloudLayers.get(renderer);
+    const circle = node?.circle;
+    if (circle && layer && typeof circle.toGlobal === "function" && typeof layer.toLocal === "function") {
+      try {
+        const center = layer.toLocal(circle.toGlobal({ x: GRAPH_NODE_CENTER, y: GRAPH_NODE_CENTER }));
+        const edge = layer.toLocal(circle.toGlobal({ x: GRAPH_NODE_CENTER * 2, y: GRAPH_NODE_CENTER }));
+        return this.getPointDistance(center, edge);
+      } catch {
+        // Fall back to unscaled graph radius below.
+      }
+    }
+
+    return GRAPH_NODE_CENTER;
+  }
+
+  getPointDistance(first, second) {
+    const firstPoint = this.toGraphPoint(first?.x, first?.y);
+    const secondPoint = this.toGraphPoint(second?.x, second?.y);
+    if (!firstPoint || !secondPoint) {
+      return null;
+    }
+
+    const distance = Math.hypot(secondPoint.x - firstPoint.x, secondPoint.y - firstPoint.y);
+    return Number.isFinite(distance) && distance > 0 ? distance : null;
+  }
+
+  getMembershipCloudPadding(radii) {
+    const sortedRadii = radii
+      .filter((radius) => Number.isFinite(radius) && radius > 0)
+      .sort((a, b) => a - b);
+    if (sortedRadii.length === 0) {
+      return CANVAS_CLOUD_PADDING;
+    }
+
+    const radius = sortedRadii[Math.floor(sortedRadii.length / 2)];
+    return radius + Math.max(CANVAS_CLOUD_MIN_MARGIN, radius * CANVAS_CLOUD_MARGIN_RATIO);
   }
 
   toGraphPoint(x, y) {
@@ -2190,8 +2249,8 @@ module.exports = class CanvasGraphController {
     return Math.max(0, Math.min(0xffffff, Math.round(value)));
   }
 
-  drawMembershipCloud(graphics, points, color) {
-    const polygon = this.createMembershipCloudPolygon(points, CANVAS_CLOUD_PADDING);
+  drawMembershipCloud(graphics, points, color, padding = CANVAS_CLOUD_PADDING) {
+    const polygon = this.createMembershipCloudPolygon(points, padding);
     if (polygon.length < 3) {
       return;
     }
