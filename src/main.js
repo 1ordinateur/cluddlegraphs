@@ -3,9 +3,11 @@ const CanvasGraphController = require("./canvas-graph");
 const CluddleGraphsSettingTab = require("./settings");
 const {
   CANVAS_LINK_COLOR_PROPERTY,
+  CANVAS_NODE_COLOR_PROPERTY,
   CANVAS_NODE_COLOR_SOURCE_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
-  CANVAS_NODE_SHAPE_PROPERTY
+  CANVAS_NODE_SHAPE_PROPERTY,
+  CANVAS_ZONE_ATTRACTION_PROPERTY
 } = require("./graph-properties");
 
 const TARGET_DEPTH = 2;
@@ -430,6 +432,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   }
 
   prepareQueriesForSearchHighlight(engine, queries) {
+    this.canvasGraph.cacheGraphColorQueries(engine, queries);
     if (!this.isHighlightModeEnabled(engine) || !Array.isArray(queries)) {
       return queries;
     }
@@ -621,6 +624,11 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const plugin = this;
 
     link.render = function(...args) {
+      if (this[CANVAS_ZONE_ATTRACTION_PROPERTY]) {
+        plugin.clearCanvasGraphHiddenLink(this);
+        return undefined;
+      }
+
       const renderer = this.renderer;
       const nativeHighlight = renderer.getHighlightNode?.();
       const highlightedNode = nativeHighlight ? null : plugin.getLinkSearchHighlightNode(renderer, this);
@@ -644,6 +652,12 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     };
 
     this.linkPatches.set(link, { render: originalRender });
+  }
+
+  clearCanvasGraphHiddenLink(link) {
+    for (const item of [link.line, link.arrow, link.path, link.graphics]) {
+      item?.clear?.();
+    }
   }
 
   restoreRenderer(renderer) {
@@ -762,8 +776,11 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   }
 
   renderWithCanvasGraphNodeColor(renderer, node, renderNode) {
+    const explicitColor = node?.[CANVAS_NODE_COLOR_PROPERTY];
     const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
-    const color = this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
+    const color = typeof explicitColor === "number"
+      ? explicitColor
+      : this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
     const colors = renderer?.colors;
     if (typeof color !== "number" || !colors?.fill) {
       return renderNode();

@@ -16,7 +16,7 @@ Cluddle Graphs adds a highlight mode to Obsidian's graph view search. It is desi
 - **Canvas card nodes**: Shows graph-only nodes for Canvas text, link, and group cards connected by Canvas edges.
 - **Canvas group memberships**: Adds graph links from Canvas group cards to the file, text, link, and nested group cards they contain.
 - **Canvas card search**: Makes Canvas text, link, and group cards searchable by their visible contents while inheriting the parent Canvas path for `path:` searches.
-- **Canvas membership clouds**: Draws translucent graph regions around visible nodes that belong to the same Canvas, using the parent Canvas node's current graph color.
+- **Canvas zones**: Optionally draws compact translucent graph regions around visible nodes that belong to the same Canvas, using the parent Canvas node's current graph color. Zones are off by default.
 - **Canvas visual controls**: Adds built-in graph panel controls for Canvas link visibility, Canvas card visibility, Canvas link color, Canvas card color inheritance, and Canvas item node shapes.
 - **Canvas group metadata refresh**: Adds a settings action that caches group membership metadata inside `.canvas` files for faster future graph hydration.
 
@@ -36,7 +36,7 @@ Canvas graph links are available from the same graph settings panel:
 - In **Filters**, turn **Canvas cards** on or off to control graph-only Canvas text, link, and group card nodes.
 - In **Filters**, turn **Canvas groups** on or off to control Canvas group membership links.
 - In **Display**, use **Canvas links** to choose the fallback link color. Canvas edge colors are used when the Canvas edge has a color.
-- In **Display**, turn **Membership clouds** on or off to show Canvas membership regions.
+- In **Display**, turn **Canvas zones** on to show Canvas membership regions and re-layout the graph with same-Canvas members gently clustered together. This is off by default.
 - In **Display**, turn **Inherit card colors** on to color Canvas text, link, and group card nodes from their parent Canvas node, or off to use graph group colors.
 - In **Display**, choose shapes for Canvas file, text, link, and group nodes.
 

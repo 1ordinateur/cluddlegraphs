@@ -7,9 +7,11 @@ const CanvasGraphController = require("./canvas-graph");
 const CluddleGraphsSettingTab = require("./settings");
 const {
   CANVAS_LINK_COLOR_PROPERTY,
+  CANVAS_NODE_COLOR_PROPERTY,
   CANVAS_NODE_COLOR_SOURCE_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
-  CANVAS_NODE_SHAPE_PROPERTY
+  CANVAS_NODE_SHAPE_PROPERTY,
+  CANVAS_ZONE_ATTRACTION_PROPERTY
 } = require("./graph-properties");
 
 const TARGET_DEPTH = 2;
@@ -434,6 +436,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   }
 
   prepareQueriesForSearchHighlight(engine, queries) {
+    this.canvasGraph.cacheGraphColorQueries(engine, queries);
     if (!this.isHighlightModeEnabled(engine) || !Array.isArray(queries)) {
       return queries;
     }
@@ -625,6 +628,11 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const plugin = this;
 
     link.render = function(...args) {
+      if (this[CANVAS_ZONE_ATTRACTION_PROPERTY]) {
+        plugin.clearCanvasGraphHiddenLink(this);
+        return undefined;
+      }
+
       const renderer = this.renderer;
       const nativeHighlight = renderer.getHighlightNode?.();
       const highlightedNode = nativeHighlight ? null : plugin.getLinkSearchHighlightNode(renderer, this);
@@ -648,6 +656,12 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     };
 
     this.linkPatches.set(link, { render: originalRender });
+  }
+
+  clearCanvasGraphHiddenLink(link) {
+    for (const item of [link.line, link.arrow, link.path, link.graphics]) {
+      item?.clear?.();
+    }
   }
 
   restoreRenderer(renderer) {
@@ -766,8 +780,11 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   }
 
   renderWithCanvasGraphNodeColor(renderer, node, renderNode) {
+    const explicitColor = node?.[CANVAS_NODE_COLOR_PROPERTY];
     const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
-    const color = this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
+    const color = typeof explicitColor === "number"
+      ? explicitColor
+      : this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
     const colors = renderer?.colors;
     if (typeof color !== "number" || !colors?.fill) {
       return renderNode();
@@ -956,9 +973,11 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 const { Setting, TFile, setIcon } = require("obsidian");
 const {
   CANVAS_LINK_COLOR_PROPERTY,
+  CANVAS_NODE_COLOR_PROPERTY,
   CANVAS_NODE_COLOR_SOURCE_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
-  CANVAS_NODE_SHAPE_PROPERTY
+  CANVAS_NODE_SHAPE_PROPERTY,
+  CANVAS_ZONE_ATTRACTION_PROPERTY
 } = require("./graph-properties");
 
 const CANVAS_LINK_MODE_OPTION = "cluddlegraphsCanvasLinkMode";
@@ -1013,11 +1032,13 @@ const CANVAS_NODE_SHAPE_CLASS_PREFIX = "cluddlegraphs-canvas-node-shape";
 const GROUP_MEMBERSHIP_METADATA_VERSION = 1;
 const UNRESOLVED_CANVAS_COLOR = 0x010203;
 const DEFAULT_LOCAL_CANVAS_DEPTH = 2;
-const CANVAS_CLOUD_PADDING = 180;
+const GRAPH_NODE_CENTER = 100;
+const CANVAS_CLOUD_PADDING = GRAPH_NODE_CENTER + 12;
 const CANVAS_CLOUD_ALPHA = 0.12;
 const CANVAS_CLOUD_LINE_ALPHA = 0.35;
-const CANVAS_CLOUD_LINE_WIDTH = 8;
-const GRAPH_NODE_CENTER = 100;
+const CANVAS_CLOUD_LINE_WIDTH = 4;
+const CANVAS_CLOUD_CORNER_SEGMENTS = 4;
+const CANVAS_CLOUD_CIRCLE_SEGMENTS = 20;
 
 const CANVAS_LINK_MODE_LABELS = {
   all: "All links",
@@ -1038,6 +1059,8 @@ module.exports = class CanvasGraphController {
     this.plugin = plugin;
     this.rendererPatches = new WeakMap();
     this.rendererEngines = new WeakMap();
+    this.graphColorQueries = new WeakMap();
+    this.zoneAttractionLinkKeys = new WeakMap();
     this.cloudLayers = new WeakMap();
     this.cloudSyncFrames = new WeakMap();
     this.filterControls = new WeakMap();
@@ -1105,12 +1128,14 @@ module.exports = class CanvasGraphController {
 
     this.cancelMembershipCloudSync(renderer);
     this.clearMembershipClouds(renderer);
+    this.zoneAttractionLinkKeys.delete(engine);
     if (renderer) {
       this.rendererEngines.delete(renderer);
     }
     this.clearSearchMatches(engine);
     this.removeControls(engine);
     this.clearRendererMetadata(renderer);
+    this.graphColorQueries.delete(engine);
   }
 
   initializeOptions(engine) {
@@ -1134,7 +1159,7 @@ module.exports = class CanvasGraphController {
     engine.options[CANVAS_MEMBERSHIP_CLOUDS_OPTION] =
       typeof engine.options?.[CANVAS_MEMBERSHIP_CLOUDS_OPTION] === "boolean"
         ? engine.options[CANVAS_MEMBERSHIP_CLOUDS_OPTION]
-        : savedOptions[CANVAS_MEMBERSHIP_CLOUDS_OPTION] !== false;
+        : savedOptions[CANVAS_MEMBERSHIP_CLOUDS_OPTION] === true;
     engine.options[CANVAS_INHERIT_CARD_COLORS_OPTION] =
       typeof engine.options?.[CANVAS_INHERIT_CARD_COLORS_OPTION] === "boolean"
         ? engine.options[CANVAS_INHERIT_CARD_COLORS_OPTION]
@@ -1320,25 +1345,22 @@ module.exports = class CanvasGraphController {
       });
 
     const membershipCloudsSetting = new Setting(contentEl)
-      .setName("Membership clouds")
+      .setName("Canvas zones")
+      .setDesc("Show compact Canvas membership regions and cluster same-Canvas members while enabled.")
       .setClass("mod-toggle")
       .setClass(CANVAS_MEMBERSHIP_CLOUDS_CLASS)
       .addToggle((toggle) => {
         toggle
           .setValue(this.shouldShowMembershipClouds(engine))
           .onChange((enabled) => {
-            engine.options[CANVAS_MEMBERSHIP_CLOUDS_OPTION] = enabled;
-            this.syncMembershipClouds(engine);
-            engine.render?.();
+            this.setMembershipCloudsOption(engine, enabled);
             engine.onOptionsChange?.();
           });
 
         displayOptions.optionListeners[CANVAS_MEMBERSHIP_CLOUDS_OPTION] = (value) => {
           if (typeof value === "boolean") {
-            engine.options[CANVAS_MEMBERSHIP_CLOUDS_OPTION] = value;
             toggle.setValue(value);
-            this.syncMembershipClouds(engine);
-            engine.render?.();
+            this.setMembershipCloudsOption(engine, value);
           }
           return this.shouldShowMembershipClouds(engine);
         };
@@ -1441,6 +1463,55 @@ module.exports = class CanvasGraphController {
   detachTrackedControls(trackedControls) {
     for (const setting of trackedControls ?? []) {
       this.plugin.detachElement(setting.settingEl);
+    }
+  }
+
+  setMembershipCloudsOption(engine, enabled) {
+    const wasEnabled = this.shouldShowMembershipClouds(engine);
+    engine.options[CANVAS_MEMBERSHIP_CLOUDS_OPTION] = enabled;
+
+    if (enabled) {
+      this.reinitializeMembershipZones(engine);
+      return;
+    }
+
+    this.zoneAttractionLinkKeys.delete(engine);
+    this.clearMembershipClouds(engine?.renderer);
+    if (wasEnabled) {
+      engine.render?.();
+    } else {
+      engine.renderer?.changed?.();
+    }
+  }
+
+  reinitializeMembershipZones(engine) {
+    this.clearMembershipClouds(engine?.renderer);
+    engine?.render?.();
+    this.restartGraphSimulation(engine?.renderer);
+    this.syncMembershipClouds(engine);
+    engine?.renderer?.changed?.();
+  }
+
+  restartGraphSimulation(renderer) {
+    for (const target of [
+      renderer,
+      renderer?.simulation,
+      renderer?.forceSimulation,
+      renderer?.sim,
+      renderer?.engine?.simulation
+    ]) {
+      if (!target) {
+        continue;
+      }
+      if (typeof target.alpha === "function") {
+        target.alpha(1);
+      }
+      if (typeof target.alphaTarget === "function") {
+        target.alphaTarget(0);
+      }
+      if (typeof target.restart === "function") {
+        target.restart();
+      }
     }
   }
 
@@ -1853,7 +1924,98 @@ module.exports = class CanvasGraphController {
 
     const engine = this.rendererEngines.get(renderer);
     return this.getGraphNodeColor(renderer?.nodeLookup?.[canvasPath])
-      ?? this.toRgbNumber(engine?.fileFilter?.[canvasPath]);
+      ?? this.toRgbNumber(engine?.fileFilter?.[canvasPath])
+      ?? this.getGraphGroupColorForPath(engine, canvasPath);
+  }
+
+  cacheGraphColorQueries(engine, queries) {
+    if (!engine || !Array.isArray(queries)) {
+      return;
+    }
+
+    if (queries.length > 0
+      && !queries.some((query) => this.toRgbNumber(query?.color) !== null
+        && !this.plugin.isSearchHighlightSentinel?.(query.color))) {
+      return;
+    }
+
+    const colorQueries = queries
+      .filter((query) => this.toRgbNumber(query?.color) !== null
+        && !this.plugin.isSearchHighlightSentinel?.(query.color)
+        && this.getGraphQueryText(query))
+      .map((query) => ({
+        query: this.getGraphQueryText(query),
+        color: query.color
+      }));
+
+    this.graphColorQueries.set(engine, colorQueries);
+  }
+
+  getGraphGroupColorForPath(engine, path) {
+    if (!engine || !path) {
+      return null;
+    }
+
+    const directColor = this.toRgbNumber(engine.fileFilter?.[path]);
+    if (directColor !== null) {
+      return directColor;
+    }
+
+    const metadata = this.getPathSearchMetadata(path);
+    for (const query of this.getGraphColorQueries(engine)) {
+      const color = this.toRgbNumber(query.color);
+      if (color !== null && this.doesCanvasGraphNodeMatchSearch(metadata, query.query)) {
+        return color;
+      }
+    }
+    return null;
+  }
+
+  getGraphColorQueries(engine) {
+    const cachedQueries = this.graphColorQueries.get(engine);
+    if (cachedQueries) {
+      return cachedQueries;
+    }
+
+    const savedOptions = this.plugin.getSavedGraphOptions(engine) ?? {};
+    const candidates = [
+      engine?.colorGroupOptions?.getColorQueries?.(),
+      engine?.colorGroupOptions?.queries,
+      engine?.colorGroupOptions?.colorQueries,
+      engine?.options?.colorGroups,
+      savedOptions.colorGroups
+    ];
+
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate)) {
+        continue;
+      }
+      const colorQueries = candidate
+        .filter((query) => this.toRgbNumber(query?.color) !== null && this.getGraphQueryText(query))
+        .map((query) => ({
+          query: this.getGraphQueryText(query),
+          color: query.color
+        }));
+      if (colorQueries.length > 0) {
+        return colorQueries;
+      }
+    }
+    return [];
+  }
+
+  getGraphQueryText(query) {
+    return String(query?.query ?? query?.text ?? query?.source ?? query?.value ?? "").trim();
+  }
+
+  getPathSearchMetadata(path) {
+    const basename = String(path).split("/").pop()?.replace(/\.[^.]+$/, "") ?? path;
+    return {
+      canvasPath: path,
+      label: basename,
+      searchPath: path,
+      searchText: `${basename} ${path}`,
+      type: "file"
+    };
   }
 
   getGraphNodeColor(node) {
@@ -1884,6 +2046,12 @@ module.exports = class CanvasGraphController {
     if (value && typeof value === "object" && "rgb" in value) {
       return this.toRgbNumber(value.rgb);
     }
+    if (value && typeof value === "object" && "color" in value) {
+      return this.toRgbNumber(value.color);
+    }
+    if (value && typeof value === "object" && "value" in value) {
+      return this.toRgbNumber(value.value);
+    }
     if (typeof value === "string") {
       const color = this.plugin.normalizeHexColor(value);
       return color ? this.plugin.hexToRgb(color) : null;
@@ -1895,63 +2063,108 @@ module.exports = class CanvasGraphController {
   }
 
   drawMembershipCloud(graphics, points, color) {
-    if (points.length === 1) {
-      this.drawSingleMembershipCloud(graphics, points[0], color);
-      return;
-    }
-    if (points.length === 2) {
-      this.drawTwoPointMembershipCloud(graphics, points[0], points[1], color);
+    const polygon = this.createMembershipCloudPolygon(points, CANVAS_CLOUD_PADDING);
+    if (polygon.length < 3) {
       return;
     }
 
-    const hull = this.getConvexHull(points);
-    const paddedHull = this.padPolygon(hull, CANVAS_CLOUD_PADDING);
-    if (paddedHull.length < 3) {
-      return;
-    }
+    this.drawMembershipCloudPolygon(graphics, polygon, color);
+  }
 
+  drawMembershipCloudPolygon(graphics, polygon, color) {
     this.beginMembershipCloud(graphics, color);
-    graphics.moveTo?.(paddedHull[0].x, paddedHull[0].y);
-    for (const point of paddedHull.slice(1)) {
+    graphics.moveTo?.(polygon[0].x, polygon[0].y);
+    for (const point of polygon.slice(1)) {
       graphics.lineTo?.(point.x, point.y);
     }
-    graphics.lineTo?.(paddedHull[0].x, paddedHull[0].y);
+    graphics.lineTo?.(polygon[0].x, polygon[0].y);
     graphics.closePath?.();
     graphics.endFill?.();
   }
 
-  drawSingleMembershipCloud(graphics, point, color) {
-    this.beginMembershipCloud(graphics, color);
-    graphics.drawCircle?.(point.x, point.y, CANVAS_CLOUD_PADDING);
-    graphics.endFill?.();
+  createMembershipCloudPolygon(points, padding) {
+    if (points.length === 1) {
+      return this.createCirclePolygon(points[0], padding, CANVAS_CLOUD_CIRCLE_SEGMENTS);
+    }
+    if (points.length === 2) {
+      return this.createCapsulePolygon(points[0], points[1], padding);
+    }
+
+    const hull = this.getConvexHull(points);
+    if (hull.length === 1) {
+      return this.createCirclePolygon(hull[0], padding, CANVAS_CLOUD_CIRCLE_SEGMENTS);
+    }
+    if (hull.length === 2) {
+      return this.createCapsulePolygon(hull[0], hull[1], padding);
+    }
+    return this.createRoundedHullPolygon(hull, padding);
   }
 
-  drawTwoPointMembershipCloud(graphics, first, second, color) {
+  createCirclePolygon(center, radius, segments) {
+    const points = [];
+    for (let index = 0; index < segments; index++) {
+      const angle = (Math.PI * 2 * index) / segments;
+      points.push({
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius
+      });
+    }
+    return points;
+  }
+
+  createCapsulePolygon(first, second, radius) {
     const dx = second.x - first.x;
     const dy = second.y - first.y;
     const length = Math.hypot(dx, dy);
     if (length === 0) {
-      this.drawSingleMembershipCloud(graphics, first, color);
-      return;
+      return this.createCirclePolygon(first, radius, CANVAS_CLOUD_CIRCLE_SEGMENTS);
     }
 
-    const normalX = (-dy / length) * CANVAS_CLOUD_PADDING;
-    const normalY = (dx / length) * CANVAS_CLOUD_PADDING;
-    const points = [
-      { x: first.x + normalX, y: first.y + normalY },
-      { x: second.x + normalX, y: second.y + normalY },
-      { x: second.x - normalX, y: second.y - normalY },
-      { x: first.x - normalX, y: first.y - normalY }
-    ];
-
-    this.beginMembershipCloud(graphics, color);
-    graphics.moveTo?.(points[0].x, points[0].y);
-    for (const point of points.slice(1)) {
-      graphics.lineTo?.(point.x, point.y);
+    const angle = Math.atan2(dy, dx);
+    const points = [];
+    for (let index = 0; index <= CANVAS_CLOUD_CIRCLE_SEGMENTS / 2; index++) {
+      const theta = angle - Math.PI / 2 + (Math.PI * index) / (CANVAS_CLOUD_CIRCLE_SEGMENTS / 2);
+      points.push({
+        x: second.x + Math.cos(theta) * radius,
+        y: second.y + Math.sin(theta) * radius
+      });
     }
-    graphics.lineTo?.(points[0].x, points[0].y);
-    graphics.closePath?.();
-    graphics.endFill?.();
+    for (let index = 0; index <= CANVAS_CLOUD_CIRCLE_SEGMENTS / 2; index++) {
+      const theta = angle + Math.PI / 2 + (Math.PI * index) / (CANVAS_CLOUD_CIRCLE_SEGMENTS / 2);
+      points.push({
+        x: first.x + Math.cos(theta) * radius,
+        y: first.y + Math.sin(theta) * radius
+      });
+    }
+    return points;
+  }
+
+  createRoundedHullPolygon(points, radius) {
+    const hull = this.ensureCounterClockwise(points);
+    const polygon = [];
+    for (let index = 0; index < hull.length; index++) {
+      const previous = hull[(index - 1 + hull.length) % hull.length];
+      const current = hull[index];
+      const next = hull[(index + 1) % hull.length];
+      const previousNormal = this.getOutwardNormal(previous, current);
+      const nextNormal = this.getOutwardNormal(current, next);
+      const startAngle = Math.atan2(previousNormal.y, previousNormal.x);
+      const endAngle = this.normalizeAngleForward(startAngle, Math.atan2(nextNormal.y, nextNormal.x));
+      const span = endAngle - startAngle;
+      const steps = Math.max(1, Math.ceil((span / (Math.PI / 2)) * CANVAS_CLOUD_CORNER_SEGMENTS));
+
+      for (let step = 0; step <= steps; step++) {
+        if (index > 0 && step === 0) {
+          continue;
+        }
+        const angle = startAngle + (span * step) / steps;
+        polygon.push({
+          x: current.x + Math.cos(angle) * radius,
+          y: current.y + Math.sin(angle) * radius
+        });
+      }
+    }
+    return polygon;
   }
 
   beginMembershipCloud(graphics, color) {
@@ -1997,31 +2210,36 @@ module.exports = class CanvasGraphController {
     return (first.x - origin.x) * (second.y - origin.y) - (first.y - origin.y) * (second.x - origin.x);
   }
 
-  padPolygon(points, padding) {
-    const centroid = this.getCentroid(points);
-    return points.map((point) => {
-      const dx = point.x - centroid.x;
-      const dy = point.y - centroid.y;
-      const length = Math.hypot(dx, dy);
-      if (length === 0) {
-        return { x: point.x, y: point.y };
-      }
-      return {
-        x: point.x + (dx / length) * padding,
-        y: point.y + (dy / length) * padding
-      };
-    });
+  ensureCounterClockwise(points) {
+    return this.getSignedPolygonArea(points) >= 0 ? points : [...points].reverse();
   }
 
-  getCentroid(points) {
-    const total = points.reduce(
-      (sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }),
-      { x: 0, y: 0 }
-    );
-    return {
-      x: total.x / points.length,
-      y: total.y / points.length
-    };
+  getSignedPolygonArea(points) {
+    let area = 0;
+    for (let index = 0; index < points.length; index++) {
+      const current = points[index];
+      const next = points[(index + 1) % points.length];
+      area += current.x * next.y - next.x * current.y;
+    }
+    return area / 2;
+  }
+
+  getOutwardNormal(first, second) {
+    const dx = second.x - first.x;
+    const dy = second.y - first.y;
+    const length = Math.hypot(dx, dy);
+    if (length === 0) {
+      return { x: 1, y: 0 };
+    }
+    return { x: dy / length, y: -dx / length };
+  }
+
+  normalizeAngleForward(startAngle, endAngle) {
+    let normalizedEnd = endAngle;
+    while (normalizedEnd < startAngle) {
+      normalizedEnd += Math.PI * 2;
+    }
+    return normalizedEnd;
   }
 
   getCanvasSearchQuery(engine) {
@@ -2092,6 +2310,7 @@ module.exports = class CanvasGraphController {
     const nativeLinks = this.getGraphLinkKeys(data);
     const canvasLinks = this.getCanvasGraphLinks(data, engine);
     const mode = this.getLinkMode(engine);
+    this.zoneAttractionLinkKeys.delete(engine);
 
     if (mode !== "hide") {
       this.addCanvasGraphLinks(data, engine, canvasLinks);
@@ -2107,6 +2326,10 @@ module.exports = class CanvasGraphController {
       this.removeOrphanNodes(data);
     }
 
+    if (this.shouldShowMembershipClouds(engine)) {
+      this.addCanvasZoneAttractionLinks(data, engine);
+    }
+
     data.numLinks = this.getGraphLinkKeys(data).size;
     return canvasLinks;
   }
@@ -2118,7 +2341,7 @@ module.exports = class CanvasGraphController {
     }
 
     const defaultColor = this.plugin.hexToRgb(this.getLinkColor(engine));
-    const doc = renderer.containerEl?.ownerDocument ?? renderer.containerEl?.doc ?? document;
+    const doc = renderer.containerEl?.ownerDocument ?? renderer.containerEl?.doc ?? globalThis.document;
 
     for (const node of renderer.nodes ?? []) {
       this.syncNode(engine, node);
@@ -2127,10 +2350,16 @@ module.exports = class CanvasGraphController {
     }
 
     for (const link of renderer.links ?? []) {
-      const canvasLink = canvasLinks[this.getLinkKey(link.source?.id, link.target?.id)];
-      if (canvasLink) {
+      const linkKey = this.getLinkKey(link.source?.id, link.target?.id);
+      const canvasLink = canvasLinks[linkKey];
+      if (this.zoneAttractionLinkKeys.get(engine)?.has(linkKey)) {
+        link[CANVAS_ZONE_ATTRACTION_PROPERTY] = true;
+        delete link[CANVAS_LINK_COLOR_PROPERTY];
+      } else if (canvasLink) {
+        delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
         link[CANVAS_LINK_COLOR_PROPERTY] = this.getRenderedLinkColor(canvasLink, defaultColor, doc);
       } else {
+        delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
         delete link[CANVAS_LINK_COLOR_PROPERTY];
       }
       this.plugin.patchGraphLink(link);
@@ -2144,6 +2373,7 @@ module.exports = class CanvasGraphController {
     const metadata = this.canvasGraphNodes[node?.id];
     if (!metadata || (metadata.type !== "file" && !this.shouldShowCards(engine))) {
       delete node?.[CANVAS_NODE_LABEL_PROPERTY];
+      delete node?.[CANVAS_NODE_COLOR_PROPERTY];
       delete node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
       if (node?.[CANVAS_NODE_SHAPE_PROPERTY]) {
         node[CANVAS_NODE_SHAPE_PROPERTY] = "circle";
@@ -2155,7 +2385,17 @@ module.exports = class CanvasGraphController {
     node[CANVAS_NODE_SHAPE_PROPERTY] = this.getNodeShape(engine, metadata.type);
     if (metadata.type !== "file" && this.shouldInheritCardColors(engine)) {
       node[CANVAS_NODE_COLOR_SOURCE_PROPERTY] = metadata.canvasPath;
+      delete node[CANVAS_NODE_COLOR_PROPERTY];
+    } else if (metadata.type !== "file") {
+      const color = this.getGraphGroupColorForPath(engine, metadata.canvasPath);
+      delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
+      if (color !== null) {
+        node[CANVAS_NODE_COLOR_PROPERTY] = color;
+      } else {
+        delete node[CANVAS_NODE_COLOR_PROPERTY];
+      }
     } else {
+      delete node[CANVAS_NODE_COLOR_PROPERTY];
       delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
     }
     if (node.text && metadata.type !== "file") {
@@ -2166,11 +2406,13 @@ module.exports = class CanvasGraphController {
 
   clearRendererMetadata(renderer) {
     for (const node of renderer?.nodes ?? []) {
+      delete node[CANVAS_NODE_COLOR_PROPERTY];
       delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
       delete node[CANVAS_NODE_LABEL_PROPERTY];
       delete node[CANVAS_NODE_SHAPE_PROPERTY];
     }
     for (const link of renderer?.links ?? []) {
+      delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
       delete link[CANVAS_LINK_COLOR_PROPERTY];
     }
     renderer?.changed?.();
@@ -2622,6 +2864,64 @@ module.exports = class CanvasGraphController {
     return this.getCanvasGraphEdgeCount(link) > 0 ? link.colors ?? [] : [];
   }
 
+  addCanvasZoneAttractionLinks(data, engine) {
+    const hiddenLinkKeys = new Set();
+    const existingLinks = this.getGraphLinkKeys(data);
+
+    for (const nodeIds of Object.values(this.canvasMemberships)) {
+      const memberIds = [];
+      const seen = new Set();
+      for (const nodeId of nodeIds ?? []) {
+        if (seen.has(nodeId) || !data.nodes?.[nodeId]) {
+          continue;
+        }
+        seen.add(nodeId);
+        memberIds.push(nodeId);
+      }
+
+      if (memberIds.length < 2) {
+        continue;
+      }
+
+      for (const [sourceId, targetId] of this.getZoneAttractionPairs(memberIds)) {
+        if (sourceId === targetId || this.hasAnyDirectionLink(existingLinks, sourceId, targetId)) {
+          continue;
+        }
+
+        data.nodes[sourceId].links ??= {};
+        data.nodes[sourceId].links[targetId] = true;
+        const linkKey = this.getLinkKey(sourceId, targetId);
+        existingLinks.add(linkKey);
+        hiddenLinkKeys.add(linkKey);
+      }
+    }
+
+    if (hiddenLinkKeys.size > 0) {
+      this.zoneAttractionLinkKeys.set(engine, hiddenLinkKeys);
+    }
+  }
+
+  getZoneAttractionPairs(memberIds) {
+    const pairs = [];
+    const hub = memberIds[0];
+    for (const memberId of memberIds.slice(1)) {
+      pairs.push([hub, memberId]);
+    }
+
+    if (memberIds.length > 2) {
+      for (let index = 0; index < memberIds.length; index++) {
+        pairs.push([memberIds[index], memberIds[(index + 1) % memberIds.length]]);
+      }
+    }
+
+    return pairs;
+  }
+
+  hasAnyDirectionLink(linkKeys, sourceId, targetId) {
+    return linkKeys.has(this.getLinkKey(sourceId, targetId))
+      || linkKeys.has(this.getLinkKey(targetId, sourceId));
+  }
+
   filterLocalCanvasGraphLinks(engine, links) {
     const localFile = engine.options.localFile;
     const localDepth = Number.isFinite(engine.options.localJumps)
@@ -2793,7 +3093,7 @@ module.exports = class CanvasGraphController {
     if (normalizedColor) {
       return this.plugin.hexToRgb(normalizedColor);
     }
-    if (!/^\d+$/.test(String(color))) {
+    if (!/^\d+$/.test(String(color)) || !doc?.createElement) {
       return null;
     }
 
@@ -2933,7 +3233,8 @@ module.exports = class CanvasGraphController {
   }
 
   getDefaultCanvasLinkColor(engine) {
-    return this.plugin.resolveCssColor?.("var(--color-accent)", engine.renderer?.containerEl?.ownerDocument ?? document)
+    const doc = engine.renderer?.containerEl?.ownerDocument ?? globalThis.document;
+    return (doc ? this.plugin.resolveCssColor?.("var(--color-accent)", doc) : null)
       ?? CANVAS_LINK_COLOR_DEFAULT;
   }
 
@@ -2971,9 +3272,11 @@ module.exports = class CanvasGraphController {
 "./src/graph-properties.js": function(module, exports, require) {
 module.exports = {
   CANVAS_LINK_COLOR_PROPERTY: "__cluddlegraphsCanvasLinkColor",
+  CANVAS_NODE_COLOR_PROPERTY: "__cluddlegraphsCanvasNodeColor",
   CANVAS_NODE_COLOR_SOURCE_PROPERTY: "__cluddlegraphsCanvasNodeColorSource",
   CANVAS_NODE_LABEL_PROPERTY: "__cluddlegraphsCanvasNodeLabel",
-  CANVAS_NODE_SHAPE_PROPERTY: "__cluddlegraphsCanvasNodeShape"
+  CANVAS_NODE_SHAPE_PROPERTY: "__cluddlegraphsCanvasNodeShape",
+  CANVAS_ZONE_ATTRACTION_PROPERTY: "__cluddlegraphsCanvasZoneAttraction"
 };
 
 },
