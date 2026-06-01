@@ -3,6 +3,7 @@ const CanvasGraphController = require("./canvas-graph");
 const CluddleGraphsSettingTab = require("./settings");
 const {
   CANVAS_LINK_COLOR_PROPERTY,
+  CANVAS_NODE_COLOR_SOURCE_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
   CANVAS_NODE_SHAPE_PROPERTY
 } = require("./graph-properties");
@@ -580,22 +581,25 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       const renderer = this.renderer;
       const nativeHighlight = renderer.getHighlightNode?.();
       const searchHighlightNode = nativeHighlight ? null : plugin.getNodeSearchHighlightNode(renderer, this);
+      const renderNode = () => originalRender.apply(this, args);
 
       try {
-        if (!searchHighlightNode) {
-          return originalRender.apply(this, args);
-        }
-
-        const previousHighlightNode = renderer.highlightNode;
-        renderer.highlightNode = searchHighlightNode;
-        try {
-          if (plugin.isSearchHighlightedNode(renderer, this)) {
-            return plugin.renderWithSearchHighlightColor(renderer, () => originalRender.apply(this, args));
+        return plugin.renderWithCanvasGraphNodeColor(renderer, this, () => {
+          if (!searchHighlightNode) {
+            return renderNode();
           }
-          return originalRender.apply(this, args);
-        } finally {
-          renderer.highlightNode = previousHighlightNode;
-        }
+
+          const previousHighlightNode = renderer.highlightNode;
+          renderer.highlightNode = searchHighlightNode;
+          try {
+            if (plugin.isSearchHighlightedNode(renderer, this)) {
+              return plugin.renderWithSearchHighlightColor(renderer, renderNode);
+            }
+            return renderNode();
+          } finally {
+            renderer.highlightNode = previousHighlightNode;
+          }
+        });
       } finally {
         plugin.canvasGraph.requestMembershipCloudSync(renderer);
       }
@@ -754,6 +758,32 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return renderNode();
     } finally {
       colors.fillHighlight = previousFillHighlight;
+    }
+  }
+
+  renderWithCanvasGraphNodeColor(renderer, node, renderNode) {
+    const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
+    const color = this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
+    const colors = renderer?.colors;
+    if (typeof color !== "number" || !colors?.fill) {
+      return renderNode();
+    }
+
+    const previousNodeColor = node.color;
+    const hadNodeColor = Object.prototype.hasOwnProperty.call(node, "color");
+    const previousFill = colors.fill;
+    node.color = { ...previousNodeColor, rgb: color };
+    colors.fill = { ...previousFill, rgb: color };
+
+    try {
+      return renderNode();
+    } finally {
+      if (hadNodeColor) {
+        node.color = previousNodeColor;
+      } else {
+        delete node.color;
+      }
+      colors.fill = previousFill;
     }
   }
 

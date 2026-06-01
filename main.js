@@ -7,6 +7,7 @@ const CanvasGraphController = require("./canvas-graph");
 const CluddleGraphsSettingTab = require("./settings");
 const {
   CANVAS_LINK_COLOR_PROPERTY,
+  CANVAS_NODE_COLOR_SOURCE_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
   CANVAS_NODE_SHAPE_PROPERTY
 } = require("./graph-properties");
@@ -584,22 +585,25 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       const renderer = this.renderer;
       const nativeHighlight = renderer.getHighlightNode?.();
       const searchHighlightNode = nativeHighlight ? null : plugin.getNodeSearchHighlightNode(renderer, this);
+      const renderNode = () => originalRender.apply(this, args);
 
       try {
-        if (!searchHighlightNode) {
-          return originalRender.apply(this, args);
-        }
-
-        const previousHighlightNode = renderer.highlightNode;
-        renderer.highlightNode = searchHighlightNode;
-        try {
-          if (plugin.isSearchHighlightedNode(renderer, this)) {
-            return plugin.renderWithSearchHighlightColor(renderer, () => originalRender.apply(this, args));
+        return plugin.renderWithCanvasGraphNodeColor(renderer, this, () => {
+          if (!searchHighlightNode) {
+            return renderNode();
           }
-          return originalRender.apply(this, args);
-        } finally {
-          renderer.highlightNode = previousHighlightNode;
-        }
+
+          const previousHighlightNode = renderer.highlightNode;
+          renderer.highlightNode = searchHighlightNode;
+          try {
+            if (plugin.isSearchHighlightedNode(renderer, this)) {
+              return plugin.renderWithSearchHighlightColor(renderer, renderNode);
+            }
+            return renderNode();
+          } finally {
+            renderer.highlightNode = previousHighlightNode;
+          }
+        });
       } finally {
         plugin.canvasGraph.requestMembershipCloudSync(renderer);
       }
@@ -758,6 +762,32 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return renderNode();
     } finally {
       colors.fillHighlight = previousFillHighlight;
+    }
+  }
+
+  renderWithCanvasGraphNodeColor(renderer, node, renderNode) {
+    const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
+    const color = this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
+    const colors = renderer?.colors;
+    if (typeof color !== "number" || !colors?.fill) {
+      return renderNode();
+    }
+
+    const previousNodeColor = node.color;
+    const hadNodeColor = Object.prototype.hasOwnProperty.call(node, "color");
+    const previousFill = colors.fill;
+    node.color = { ...previousNodeColor, rgb: color };
+    colors.fill = { ...previousFill, rgb: color };
+
+    try {
+      return renderNode();
+    } finally {
+      if (hadNodeColor) {
+        node.color = previousNodeColor;
+      } else {
+        delete node.color;
+      }
+      colors.fill = previousFill;
     }
   }
 
@@ -926,6 +956,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 const { Setting, TFile, setIcon } = require("obsidian");
 const {
   CANVAS_LINK_COLOR_PROPERTY,
+  CANVAS_NODE_COLOR_SOURCE_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
   CANVAS_NODE_SHAPE_PROPERTY
 } = require("./graph-properties");
@@ -935,6 +966,7 @@ const CANVAS_LINK_COLOR_OPTION = "cluddlegraphsCanvasLinkColor";
 const CANVAS_CARDS_OPTION = "cluddlegraphsCanvasCards";
 const CANVAS_GROUP_MEMBERSHIPS_OPTION = "cluddlegraphsCanvasGroupMemberships";
 const CANVAS_MEMBERSHIP_CLOUDS_OPTION = "cluddlegraphsCanvasMembershipClouds";
+const CANVAS_INHERIT_CARD_COLORS_OPTION = "cluddlegraphsCanvasInheritCardColors";
 const CANVAS_NODE_SHAPE_OPTIONS = {
   file: "cluddlegraphsCanvasFileNodeShape",
   text: "cluddlegraphsCanvasTextNodeShape",
@@ -976,6 +1008,7 @@ const CANVAS_CARDS_CLASS = "cluddlegraphs-canvas-cards";
 const CANVAS_GROUP_MEMBERSHIPS_CLASS = "cluddlegraphs-canvas-group-memberships";
 const CANVAS_LINK_COLOR_CLASS = "cluddlegraphs-canvas-link-color";
 const CANVAS_MEMBERSHIP_CLOUDS_CLASS = "cluddlegraphs-canvas-membership-clouds";
+const CANVAS_INHERIT_CARD_COLORS_CLASS = "cluddlegraphs-canvas-inherit-card-colors";
 const CANVAS_NODE_SHAPE_CLASS_PREFIX = "cluddlegraphs-canvas-node-shape";
 const GROUP_MEMBERSHIP_METADATA_VERSION = 1;
 const UNRESOLVED_CANVAS_COLOR = 0x010203;
@@ -1102,6 +1135,10 @@ module.exports = class CanvasGraphController {
       typeof engine.options?.[CANVAS_MEMBERSHIP_CLOUDS_OPTION] === "boolean"
         ? engine.options[CANVAS_MEMBERSHIP_CLOUDS_OPTION]
         : savedOptions[CANVAS_MEMBERSHIP_CLOUDS_OPTION] !== false;
+    engine.options[CANVAS_INHERIT_CARD_COLORS_OPTION] =
+      typeof engine.options?.[CANVAS_INHERIT_CARD_COLORS_OPTION] === "boolean"
+        ? engine.options[CANVAS_INHERIT_CARD_COLORS_OPTION]
+        : savedOptions[CANVAS_INHERIT_CARD_COLORS_OPTION] !== false;
 
     for (const type of CANVAS_NODE_TYPES) {
       const option = CANVAS_NODE_SHAPE_OPTIONS[type];
@@ -1238,6 +1275,7 @@ module.exports = class CanvasGraphController {
       [
         CANVAS_LINK_COLOR_CLASS,
         CANVAS_MEMBERSHIP_CLOUDS_CLASS,
+        CANVAS_INHERIT_CARD_COLORS_CLASS,
         ...CANVAS_NODE_TYPES.map((type) => `${CANVAS_NODE_SHAPE_CLASS_PREFIX}-${type}`)
       ],
       []
@@ -1247,6 +1285,7 @@ module.exports = class CanvasGraphController {
       [
         CANVAS_LINK_COLOR_CLASS,
         CANVAS_MEMBERSHIP_CLOUDS_CLASS,
+        CANVAS_INHERIT_CARD_COLORS_CLASS,
         ...CANVAS_NODE_TYPES.map((type) => `${CANVAS_NODE_SHAPE_CLASS_PREFIX}-${type}`)
       ],
       []
@@ -1305,8 +1344,32 @@ module.exports = class CanvasGraphController {
         };
       });
 
+    const inheritCardColorsSetting = new Setting(contentEl)
+      .setName("Inherit card colors")
+      .setDesc("Use the parent Canvas node color for Canvas card and group nodes. Turn off to use graph group colors.")
+      .setClass("mod-toggle")
+      .setClass(CANVAS_INHERIT_CARD_COLORS_CLASS)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.shouldInheritCardColors(engine))
+          .onChange((enabled) => {
+            engine.options[CANVAS_INHERIT_CARD_COLORS_OPTION] = enabled;
+            engine.render?.();
+            engine.onOptionsChange?.();
+          });
+
+        displayOptions.optionListeners[CANVAS_INHERIT_CARD_COLORS_OPTION] = (value) => {
+          if (typeof value === "boolean") {
+            engine.options[CANVAS_INHERIT_CARD_COLORS_OPTION] = value;
+            toggle.setValue(value);
+            engine.render?.();
+          }
+          return this.shouldInheritCardColors(engine);
+        };
+      });
+
     const shapeSettings = CANVAS_NODE_TYPES.map((type) => this.addShapeControl(engine, displayOptions, contentEl, type));
-    this.displayControls.set(engine, [colorSetting, membershipCloudsSetting, ...shapeSettings]);
+    this.displayControls.set(engine, [colorSetting, membershipCloudsSetting, inheritCardColorsSetting, ...shapeSettings]);
   }
 
   addShapeControl(engine, displayOptions, childrenEl, type) {
@@ -1358,6 +1421,7 @@ module.exports = class CanvasGraphController {
     delete engine?.filterOptions?.optionListeners?.[CANVAS_GROUP_MEMBERSHIPS_OPTION];
     delete engine?.displayOptions?.optionListeners?.[CANVAS_LINK_COLOR_OPTION];
     delete engine?.displayOptions?.optionListeners?.[CANVAS_MEMBERSHIP_CLOUDS_OPTION];
+    delete engine?.displayOptions?.optionListeners?.[CANVAS_INHERIT_CARD_COLORS_OPTION];
     for (const option of Object.values(CANVAS_NODE_SHAPE_OPTIONS)) {
       delete engine?.displayOptions?.optionListeners?.[option];
     }
@@ -1782,6 +1846,16 @@ module.exports = class CanvasGraphController {
       ?? this.plugin.hexToRgb(CANVAS_LINK_COLOR_DEFAULT);
   }
 
+  getCanvasNodeInheritedColor(renderer, canvasPath) {
+    if (!canvasPath) {
+      return null;
+    }
+
+    const engine = this.rendererEngines.get(renderer);
+    return this.getGraphNodeColor(renderer?.nodeLookup?.[canvasPath])
+      ?? this.toRgbNumber(engine?.fileFilter?.[canvasPath]);
+  }
+
   getGraphNodeColor(node) {
     for (const value of [
       node?.color?.rgb,
@@ -2069,8 +2143,9 @@ module.exports = class CanvasGraphController {
   syncNode(engine, node) {
     const metadata = this.canvasGraphNodes[node?.id];
     if (!metadata || (metadata.type !== "file" && !this.shouldShowCards(engine))) {
+      delete node?.[CANVAS_NODE_LABEL_PROPERTY];
+      delete node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
       if (node?.[CANVAS_NODE_SHAPE_PROPERTY]) {
-        delete node[CANVAS_NODE_LABEL_PROPERTY];
         node[CANVAS_NODE_SHAPE_PROPERTY] = "circle";
       }
       return;
@@ -2078,6 +2153,11 @@ module.exports = class CanvasGraphController {
 
     node[CANVAS_NODE_LABEL_PROPERTY] = metadata.type === "file" ? undefined : metadata.label;
     node[CANVAS_NODE_SHAPE_PROPERTY] = this.getNodeShape(engine, metadata.type);
+    if (metadata.type !== "file" && this.shouldInheritCardColors(engine)) {
+      node[CANVAS_NODE_COLOR_SOURCE_PROPERTY] = metadata.canvasPath;
+    } else {
+      delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
+    }
     if (node.text && metadata.type !== "file") {
       node.text.text = metadata.label;
     }
@@ -2086,6 +2166,7 @@ module.exports = class CanvasGraphController {
 
   clearRendererMetadata(renderer) {
     for (const node of renderer?.nodes ?? []) {
+      delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
       delete node[CANVAS_NODE_LABEL_PROPERTY];
       delete node[CANVAS_NODE_SHAPE_PROPERTY];
     }
@@ -2842,6 +2923,10 @@ module.exports = class CanvasGraphController {
     return engine.options?.[CANVAS_MEMBERSHIP_CLOUDS_OPTION] !== false;
   }
 
+  shouldInheritCardColors(engine) {
+    return engine.options?.[CANVAS_INHERIT_CARD_COLORS_OPTION] !== false;
+  }
+
   getLinkColor(engine) {
     return this.plugin.normalizeHexColor(engine.options?.[CANVAS_LINK_COLOR_OPTION])
       ?? this.getDefaultCanvasLinkColor(engine);
@@ -2886,6 +2971,7 @@ module.exports = class CanvasGraphController {
 "./src/graph-properties.js": function(module, exports, require) {
 module.exports = {
   CANVAS_LINK_COLOR_PROPERTY: "__cluddlegraphsCanvasLinkColor",
+  CANVAS_NODE_COLOR_SOURCE_PROPERTY: "__cluddlegraphsCanvasNodeColorSource",
   CANVAS_NODE_LABEL_PROPERTY: "__cluddlegraphsCanvasNodeLabel",
   CANVAS_NODE_SHAPE_PROPERTY: "__cluddlegraphsCanvasNodeShape"
 };
