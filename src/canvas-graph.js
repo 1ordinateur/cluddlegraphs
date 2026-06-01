@@ -8,6 +8,7 @@ const {
 const CANVAS_LINK_MODE_OPTION = "cluddlegraphsCanvasLinkMode";
 const CANVAS_LINK_COLOR_OPTION = "cluddlegraphsCanvasLinkColor";
 const CANVAS_CARDS_OPTION = "cluddlegraphsCanvasCards";
+const CANVAS_GROUP_MEMBERSHIPS_OPTION = "cluddlegraphsCanvasGroupMemberships";
 const CANVAS_NODE_SHAPE_OPTIONS = {
   file: "cluddlegraphsCanvasFileNodeShape",
   text: "cluddlegraphsCanvasTextNodeShape",
@@ -27,8 +28,10 @@ const CANVAS_SHAPES = ["circle", "triangle", "square", "pentagon", "hexagon"];
 const CANVAS_GRAPH_ONLY_NODE_PREFIX = "cluddlegraphs-canvas-node";
 const CANVAS_LINK_MODE_CLASS = "cluddlegraphs-canvas-link-mode";
 const CANVAS_CARDS_CLASS = "cluddlegraphs-canvas-cards";
+const CANVAS_GROUP_MEMBERSHIPS_CLASS = "cluddlegraphs-canvas-group-memberships";
 const CANVAS_LINK_COLOR_CLASS = "cluddlegraphs-canvas-link-color";
 const CANVAS_NODE_SHAPE_CLASS_PREFIX = "cluddlegraphs-canvas-node-shape";
+const GROUP_MEMBERSHIP_METADATA_VERSION = 1;
 const UNRESOLVED_CANVAS_COLOR = 0x010203;
 const DEFAULT_LOCAL_CANVAS_DEPTH = 2;
 
@@ -57,6 +60,7 @@ module.exports = class CanvasGraphController {
     this.hydration = null;
     this.hydrated = false;
     this.needsHydration = true;
+    this.suppressHydrationRequests = false;
   }
 
   onload() {
@@ -66,6 +70,10 @@ module.exports = class CanvasGraphController {
     this.eventsRegistered = true;
 
     const requestHydration = (file) => {
+      if (this.suppressHydrationRequests) {
+        this.needsHydration = true;
+        return;
+      }
       if (this.hasOpenGraphView()) {
         void this.hydrate(file instanceof TFile && file.extension === "canvas" ? file : undefined);
       } else {
@@ -122,6 +130,10 @@ module.exports = class CanvasGraphController {
       typeof engine.options?.[CANVAS_CARDS_OPTION] === "boolean"
         ? engine.options[CANVAS_CARDS_OPTION]
         : savedOptions[CANVAS_CARDS_OPTION] !== false;
+    engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION] =
+      typeof engine.options?.[CANVAS_GROUP_MEMBERSHIPS_OPTION] === "boolean"
+        ? engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION]
+        : savedOptions[CANVAS_GROUP_MEMBERSHIPS_OPTION] !== false;
 
     for (const type of CANVAS_NODE_TYPES) {
       const option = CANVAS_NODE_SHAPE_OPTIONS[type];
@@ -144,7 +156,11 @@ module.exports = class CanvasGraphController {
       return;
     }
 
-    this.removeExistingControls(childrenEl, [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS], trackedControls);
+    this.removeExistingControls(
+      childrenEl,
+      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
+      trackedControls
+    );
 
     const linkModeSetting = new Setting(childrenEl)
       .setName("Canvas links")
@@ -196,7 +212,30 @@ module.exports = class CanvasGraphController {
         };
       });
 
-    this.filterControls.set(engine, [linkModeSetting, cardsSetting]);
+    const groupMembershipSetting = new Setting(childrenEl)
+      .setName("Canvas groups")
+      .setClass("mod-toggle")
+      .setClass(CANVAS_GROUP_MEMBERSHIPS_CLASS)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.shouldShowGroupMemberships(engine))
+          .onChange((enabled) => {
+            engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION] = enabled;
+            engine.render?.();
+            engine.onOptionsChange?.();
+          });
+
+        filterOptions.optionListeners[CANVAS_GROUP_MEMBERSHIPS_OPTION] = (value) => {
+          if (typeof value === "boolean") {
+            engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION] = value;
+            toggle.setValue(value);
+            engine.render?.();
+          }
+          return this.shouldShowGroupMemberships(engine);
+        };
+      });
+
+    this.filterControls.set(engine, [linkModeSetting, cardsSetting, groupMembershipSetting]);
   }
 
   addDisplayControls(engine) {
@@ -293,6 +332,7 @@ module.exports = class CanvasGraphController {
 
     delete engine?.filterOptions?.optionListeners?.[CANVAS_LINK_MODE_OPTION];
     delete engine?.filterOptions?.optionListeners?.[CANVAS_CARDS_OPTION];
+    delete engine?.filterOptions?.optionListeners?.[CANVAS_GROUP_MEMBERSHIPS_OPTION];
     delete engine?.displayOptions?.optionListeners?.[CANVAS_LINK_COLOR_OPTION];
     for (const option of Object.values(CANVAS_NODE_SHAPE_OPTIONS)) {
       delete engine?.displayOptions?.optionListeners?.[option];
@@ -483,15 +523,208 @@ module.exports = class CanvasGraphController {
 
       nodes[sourceNode.id] = this.toGraphNodeMetadata(sourceNode);
       nodes[targetNode.id] = this.toGraphNodeMetadata(targetNode);
-      const sourceLinks = links[sourceNode.id] ??= {};
-      const resolvedLink = sourceLinks[targetNode.id] ??= { count: 0, colors: [] };
-      resolvedLink.count++;
-      if (edge.color && !resolvedLink.colors.includes(edge.color)) {
-        resolvedLink.colors.push(edge.color);
+      this.addCanvasGraphLink(links, sourceNode.id, targetNode.id, {
+        kind: "edge",
+        color: edge.color
+      });
+    }
+
+    const groupMembership = this.getCanvasGroupMembership(data);
+    for (const [groupNodeId, group] of Object.entries(groupMembership.groups)) {
+      const sourceNode = graphNodes.get(groupNodeId);
+      if (!sourceNode) {
+        continue;
+      }
+
+      for (const memberNodeId of group.memberIds ?? []) {
+        const targetNode = graphNodes.get(memberNodeId);
+        if (!targetNode) {
+          continue;
+        }
+
+        nodes[sourceNode.id] = this.toGraphNodeMetadata(sourceNode);
+        nodes[targetNode.id] = this.toGraphNodeMetadata(targetNode);
+        this.addCanvasGraphLink(links, sourceNode.id, targetNode.id, {
+          kind: "groupMembership"
+        });
       }
     }
 
     return { links, nodes };
+  }
+
+  addCanvasGraphLink(links, sourceId, targetId, options = {}) {
+    const sourceLinks = links[sourceId] ??= {};
+    const resolvedLink = sourceLinks[targetId] ??= {
+      count: 0,
+      colors: [],
+      edgeCount: 0,
+      groupMembershipCount: 0
+    };
+
+    resolvedLink.count++;
+    if (options.kind === "groupMembership") {
+      resolvedLink.groupMembershipCount++;
+    } else {
+      resolvedLink.edgeCount++;
+    }
+
+    if (options.color && !resolvedLink.colors.includes(options.color)) {
+      resolvedLink.colors.push(options.color);
+    }
+  }
+
+  getCanvasGroupMembership(data) {
+    const geometryHash = this.getGroupMembershipGeometryHash(data);
+    const cachedMembership = data.metadata?.cluddlegraphs?.groupMembership;
+    if (this.isValidGroupMembershipMetadata(cachedMembership, geometryHash)) {
+      return cachedMembership;
+    }
+
+    return this.calculateGroupMembershipMetadata(data, geometryHash);
+  }
+
+  calculateGroupMembershipMetadata(data, geometryHash = this.getGroupMembershipGeometryHash(data)) {
+    const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+    const groupEntries = [];
+    const groups = {};
+
+    for (const node of nodes) {
+      if (!this.isCanvasGroupNode(node)) {
+        continue;
+      }
+
+      const bbox = this.getCanvasNodeBBox(node);
+      if (!bbox) {
+        continue;
+      }
+
+      groupEntries.push({
+        id: node.id,
+        bbox,
+        area: this.getBBoxArea(bbox)
+      });
+      groups[node.id] = {
+        label: this.cleanLabel(node.label) || "Group",
+        memberIds: []
+      };
+    }
+
+    for (const node of nodes) {
+      if (!this.isGroupMembershipNode(node)) {
+        continue;
+      }
+
+      const nodeBBox = this.getCanvasNodeBBox(node);
+      if (!nodeBBox) {
+        continue;
+      }
+
+      let containingGroup = null;
+      for (const group of groupEntries) {
+        if (group.id === node.id || !this.isBBoxInside(nodeBBox, group.bbox)) {
+          continue;
+        }
+
+        if (!containingGroup
+          || group.area < containingGroup.area
+          || (group.area === containingGroup.area && group.id < containingGroup.id)) {
+          containingGroup = group;
+        }
+      }
+
+      if (containingGroup) {
+        groups[containingGroup.id].memberIds.push(node.id);
+      }
+    }
+
+    for (const group of Object.values(groups)) {
+      group.memberIds.sort();
+    }
+
+    return {
+      version: GROUP_MEMBERSHIP_METADATA_VERSION,
+      updatedAt: new Date().toISOString(),
+      geometryHash,
+      groups
+    };
+  }
+
+  isValidGroupMembershipMetadata(metadata, geometryHash) {
+    return !!metadata
+      && metadata.version === GROUP_MEMBERSHIP_METADATA_VERSION
+      && metadata.geometryHash === geometryHash
+      && metadata.groups
+      && typeof metadata.groups === "object"
+      && !Array.isArray(metadata.groups);
+  }
+
+  isGroupMembershipNode(node) {
+    return !!node?.id
+      && (node.type === "file" || node.type === "text" || node.type === "link" || node.type === "group");
+  }
+
+  isCanvasGroupNode(node) {
+    return !!node?.id && node.type === "group";
+  }
+
+  getCanvasNodeBBox(node) {
+    const x = this.toFiniteNumber(node?.x);
+    const y = this.toFiniteNumber(node?.y);
+    const width = this.toFiniteNumber(node?.width);
+    const height = this.toFiniteNumber(node?.height);
+    if (x === null || y === null || width === null || height === null) {
+      return null;
+    }
+
+    return {
+      minX: x,
+      minY: y,
+      maxX: x + width,
+      maxY: y + height
+    };
+  }
+
+  isBBoxInside(inner, outer) {
+    return inner.minX > outer.minX
+      && inner.minY > outer.minY
+      && inner.maxX < outer.maxX
+      && inner.maxY < outer.maxY;
+  }
+
+  getBBoxArea(bbox) {
+    return Math.abs((bbox.maxX - bbox.minX) * (bbox.maxY - bbox.minY));
+  }
+
+  toFiniteNumber(value) {
+    const number = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  getGroupMembershipGeometryHash(data) {
+    const entries = (Array.isArray(data.nodes) ? data.nodes : [])
+      .filter((node) => this.isGroupMembershipNode(node))
+      .map((node) => ({
+        id: String(node.id),
+        type: String(node.type),
+        x: this.toFiniteNumber(node.x),
+        y: this.toFiniteNumber(node.y),
+        width: this.toFiniteNumber(node.width),
+        height: this.toFiniteNumber(node.height),
+        label: node.type === "group" ? String(node.label ?? "") : ""
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id) || a.type.localeCompare(b.type));
+
+    return this.hashString(JSON.stringify(entries));
+  }
+
+  hashString(value) {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index++) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
   }
 
   toCanvasGraphNode(canvasPath, node) {
@@ -584,14 +817,30 @@ module.exports = class CanvasGraphController {
           if (sourcePath === targetPath) {
             continue;
           }
+          const visibleCount = this.getVisibleCanvasGraphLinkCount(link, engine);
+          if (visibleCount === 0) {
+            continue;
+          }
           if (!this.shouldAllowGraphNode(engine, sourcePath) || !this.shouldAllowGraphNode(engine, targetPath)) {
             continue;
           }
 
           const key = this.getLinkKey(sourcePath, targetPath);
-          const existingLink = links[key] ?? { sourcePath, targetPath, count: 0, colors: [] };
-          existingLink.count += link.count;
-          for (const color of link.colors) {
+          const existingLink = links[key] ?? {
+            sourcePath,
+            targetPath,
+            count: 0,
+            colors: [],
+            edgeCount: 0,
+            groupMembershipCount: 0
+          };
+          existingLink.count += visibleCount;
+          existingLink.edgeCount += this.getCanvasGraphEdgeCount(link);
+          if (this.shouldShowGroupMemberships(engine)) {
+            existingLink.groupMembershipCount += link.groupMembershipCount ?? 0;
+          }
+
+          for (const color of this.getVisibleCanvasGraphLinkColors(link)) {
             if (!existingLink.colors.includes(color)) {
               existingLink.colors.push(color);
             }
@@ -602,6 +851,20 @@ module.exports = class CanvasGraphController {
     }
 
     return engine.options?.localFile ? this.filterLocalCanvasGraphLinks(engine, links) : links;
+  }
+
+  getVisibleCanvasGraphLinkCount(link, engine) {
+    const edgeCount = this.getCanvasGraphEdgeCount(link);
+    const groupMembershipCount = this.shouldShowGroupMemberships(engine) ? link.groupMembershipCount ?? 0 : 0;
+    return edgeCount + groupMembershipCount;
+  }
+
+  getCanvasGraphEdgeCount(link) {
+    return typeof link.edgeCount === "number" ? link.edgeCount : link.count ?? 0;
+  }
+
+  getVisibleCanvasGraphLinkColors(link) {
+    return this.getCanvasGraphEdgeCount(link) > 0 ? link.colors ?? [] : [];
   }
 
   filterLocalCanvasGraphLinks(engine, links) {
@@ -790,6 +1053,90 @@ module.exports = class CanvasGraphController {
     return (parseInt(match[1], 10) << 16) + (parseInt(match[2], 10) << 8) + parseInt(match[3], 10);
   }
 
+  async refreshAllGroupMembershipMetadata() {
+    const vault = this.plugin.app.vault;
+    const canvasFiles = vault.getFiles().filter((file) => file.extension === "canvas");
+    const result = {
+      total: canvasFiles.length,
+      updated: 0,
+      unchanged: 0,
+      failed: 0
+    };
+
+    this.suppressHydrationRequests = true;
+    try {
+      for (const file of canvasFiles) {
+        try {
+          const changed = await this.refreshGroupMembershipMetadataFile(file);
+          if (changed) {
+            result.updated++;
+          } else {
+            result.unchanged++;
+          }
+        } catch (error) {
+          result.failed++;
+          console.error("Cluddle Graphs: failed to refresh Canvas group metadata", file.path, error);
+        }
+      }
+    } finally {
+      this.suppressHydrationRequests = false;
+    }
+
+    await this.hydrate();
+    return result;
+  }
+
+  async refreshGroupMembershipMetadataFile(file) {
+    const vault = this.plugin.app.vault;
+    if (typeof vault.process !== "function") {
+      throw new Error("Vault.process is unavailable");
+    }
+
+    let changed = false;
+    await vault.process(file, (source) => {
+      const refreshed = this.refreshGroupMembershipMetadataSource(source);
+      changed = refreshed.changed;
+      return refreshed.source;
+    });
+    return changed;
+  }
+
+  refreshGroupMembershipMetadataSource(source) {
+    const data = JSON.parse(source);
+    const membership = this.calculateGroupMembershipMetadata(data);
+    const currentMembership = data.metadata?.cluddlegraphs?.groupMembership;
+
+    if (this.hasSameGroupMembershipMetadata(currentMembership, membership)) {
+      return { source, changed: false };
+    }
+
+    data.metadata ??= {};
+    data.metadata.cluddlegraphs ??= {};
+    data.metadata.cluddlegraphs.groupMembership = membership;
+    return {
+      source: this.stringifyCanvasData(data, source),
+      changed: true
+    };
+  }
+
+  hasSameGroupMembershipMetadata(currentMembership, nextMembership) {
+    return !!currentMembership
+      && currentMembership.version === nextMembership.version
+      && currentMembership.geometryHash === nextMembership.geometryHash
+      && JSON.stringify(currentMembership.groups ?? {}) === JSON.stringify(nextMembership.groups ?? {});
+  }
+
+  stringifyCanvasData(data, source) {
+    const indentation = this.detectJsonIndentation(source);
+    const trailingNewline = source.endsWith("\n") ? "\n" : "";
+    return `${JSON.stringify(data, null, indentation)}${trailingNewline}`;
+  }
+
+  detectJsonIndentation(source) {
+    const match = source.match(/\n([ \t]+)"/);
+    return match?.[1] ?? "\t";
+  }
+
   getLinkMode(engine) {
     return this.parseLinkMode(engine.options?.[CANVAS_LINK_MODE_OPTION]) ?? CANVAS_LINK_MODE_DEFAULT;
   }
@@ -800,6 +1147,10 @@ module.exports = class CanvasGraphController {
 
   shouldShowCards(engine) {
     return engine.options?.[CANVAS_CARDS_OPTION] !== false;
+  }
+
+  shouldShowGroupMemberships(engine) {
+    return engine.options?.[CANVAS_GROUP_MEMBERSHIPS_OPTION] !== false;
   }
 
   getLinkColor(engine) {

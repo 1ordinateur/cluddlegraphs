@@ -1,5 +1,6 @@
 const { Plugin, Setting } = require("obsidian");
 const CanvasGraphController = require("./canvas-graph");
+const CluddleGraphsSettingTab = require("./settings");
 const {
   CANVAS_LINK_COLOR_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
@@ -36,6 +37,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.filterControls = new WeakMap();
     this.displayControls = new WeakMap();
     this.resetButtonPatches = new WeakMap();
+    this.addSettingTab(new CluddleGraphsSettingTab(this.app, this));
 
     const syncSoon = () => this.scheduleGraphSync();
 
