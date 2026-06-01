@@ -88,7 +88,6 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
 
     const setting = new Setting(childrenEl)
       .setName("Highlight search matches")
-      .setDesc("Keep all graph nodes visible and highlight search matches like hovered nodes.")
       .setClass("mod-toggle")
       .setClass(SEARCH_HIGHLIGHT_TOGGLE_CLASS)
       .addToggle((toggle) => {
