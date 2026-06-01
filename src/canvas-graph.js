@@ -16,7 +16,7 @@ const CANVAS_NODE_SHAPE_OPTIONS = {
   link: "cluddlegraphsCanvasLinkNodeShape",
   group: "cluddlegraphsCanvasGroupNodeShape"
 };
-const CANVAS_LINK_MODE_DEFAULT = "all";
+const CANVAS_LINK_MODE_DEFAULT = "hide";
 const CANVAS_LINK_COLOR_DEFAULT = "#7c3aed";
 const CANVAS_NODE_SHAPE_DEFAULTS = {
   file: "circle",
