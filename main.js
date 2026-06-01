@@ -470,15 +470,11 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
       return;
     }
 
-    const originalGetHighlightNode = renderer.getHighlightNode;
-    if (typeof originalGetHighlightNode !== "function") {
+    if (typeof renderer.getHighlightNode !== "function") {
       return;
     }
 
     const plugin = this;
-    renderer.getHighlightNode = function(...args) {
-      return originalGetHighlightNode.apply(this, args);
-    };
     renderer.isSearchHighlightedNode = function(node) {
       return plugin.isSearchHighlightedNode(this, node);
     };
@@ -489,7 +485,7 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
     renderer.searchHighlightNodeIds = new Set();
     renderer.searchHighlightNodes = new Set();
     renderer.searchHighlightColor = null;
-    this.rendererPatches.set(renderer, { getHighlightNode: originalGetHighlightNode });
+    this.rendererPatches.set(renderer, {});
   }
 
   patchRendererElements(renderer) {
@@ -570,7 +566,6 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
 
     const rendererPatch = this.rendererPatches.get(renderer);
     if (rendererPatch) {
-      renderer.getHighlightNode = rendererPatch.getHighlightNode;
       delete renderer.isSearchHighlightedNode;
       delete renderer.isSearchRelatedNode;
       delete renderer.searchHighlightNodeIds;

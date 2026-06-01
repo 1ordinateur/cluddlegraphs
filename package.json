@@ -1,0 +1,19 @@
+{
+  "name": "cluddlegraphsearch",
+  "version": "1.5.0",
+  "description": "Highlight graph search matches without hiding non-matching nodes.",
+  "main": "main.js",
+  "scripts": {
+    "check": "node --check main.js"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "graph",
+    "search",
+    "highlight"
+  ],
+  "author": "Cluddle Graph Search contributors",
+  "license": "MIT",
+  "devDependencies": {}
+}
