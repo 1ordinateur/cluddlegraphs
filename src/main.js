@@ -581,19 +581,23 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       const nativeHighlight = renderer.getHighlightNode?.();
       const searchHighlightNode = nativeHighlight ? null : plugin.getNodeSearchHighlightNode(renderer, this);
 
-      if (!searchHighlightNode) {
-        return originalRender.apply(this, args);
-      }
-
-      const previousHighlightNode = renderer.highlightNode;
-      renderer.highlightNode = searchHighlightNode;
       try {
-        if (plugin.isSearchHighlightedNode(renderer, this)) {
-          return plugin.renderWithSearchHighlightColor(renderer, () => originalRender.apply(this, args));
+        if (!searchHighlightNode) {
+          return originalRender.apply(this, args);
         }
-        return originalRender.apply(this, args);
+
+        const previousHighlightNode = renderer.highlightNode;
+        renderer.highlightNode = searchHighlightNode;
+        try {
+          if (plugin.isSearchHighlightedNode(renderer, this)) {
+            return plugin.renderWithSearchHighlightColor(renderer, () => originalRender.apply(this, args));
+          }
+          return originalRender.apply(this, args);
+        } finally {
+          renderer.highlightNode = previousHighlightNode;
+        }
       } finally {
-        renderer.highlightNode = previousHighlightNode;
+        plugin.canvasGraph.requestMembershipCloudSync(renderer);
       }
     };
 
