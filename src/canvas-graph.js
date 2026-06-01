@@ -30,6 +30,7 @@ const CANVAS_CARDS_CLASS = "cluddlegraphs-canvas-cards";
 const CANVAS_LINK_COLOR_CLASS = "cluddlegraphs-canvas-link-color";
 const CANVAS_NODE_SHAPE_CLASS_PREFIX = "cluddlegraphs-canvas-node-shape";
 const UNRESOLVED_CANVAS_COLOR = 0x010203;
+const DEFAULT_LOCAL_CANVAS_DEPTH = 2;
 
 const CANVAS_LINK_MODE_LABELS = {
   all: "All links",
@@ -59,6 +60,11 @@ module.exports = class CanvasGraphController {
   }
 
   onload() {
+    if (this.eventsRegistered) {
+      return;
+    }
+    this.eventsRegistered = true;
+
     const requestHydration = (file) => {
       if (this.hasOpenGraphView()) {
         void this.hydrate(file instanceof TFile && file.extension === "canvas" ? file : undefined);
@@ -68,9 +74,7 @@ module.exports = class CanvasGraphController {
     };
 
     this.plugin.registerEvent(this.plugin.app.vault.on("create", (file) => {
-      if (file instanceof TFile && file.extension === "canvas") {
-        requestHydration(file);
-      }
+      requestHydration(file instanceof TFile && file.extension === "canvas" ? file : undefined);
     }));
     this.plugin.registerEvent(this.plugin.app.vault.on("modify", (file) => {
       if (file instanceof TFile && file.extension === "canvas") {
@@ -584,7 +588,7 @@ module.exports = class CanvasGraphController {
           if (sourcePath === targetPath) {
             continue;
           }
-          if (!this.shouldIncludeCanvasGraphLink(data, engine, sourcePath, targetPath)) {
+          if (!this.shouldAllowGraphNode(engine, sourcePath) || !this.shouldAllowGraphNode(engine, targetPath)) {
             continue;
           }
 
@@ -600,27 +604,57 @@ module.exports = class CanvasGraphController {
         }
       }
     }
-    return links;
+
+    return engine.options?.localFile ? this.filterLocalCanvasGraphLinks(engine, links) : links;
   }
 
-  shouldIncludeCanvasGraphLink(data, engine, sourcePath, targetPath) {
-    if (!this.shouldAllowGraphNode(engine, sourcePath) || !this.shouldAllowGraphNode(engine, targetPath)) {
-      return false;
+  filterLocalCanvasGraphLinks(engine, links) {
+    const localFile = engine.options.localFile;
+    const localDepth = Number.isFinite(engine.options.localJumps)
+      ? engine.options.localJumps
+      : DEFAULT_LOCAL_CANVAS_DEPTH;
+    const maxDepth = Math.max(1, localDepth);
+    const includedNodes = new Set([localFile]);
+    const includedLinks = new Set();
+    let frontier = new Set([localFile]);
+
+    for (let depth = 0; depth < maxDepth && frontier.size > 0; depth++) {
+      const nextFrontier = new Set();
+
+      for (const [key, link] of Object.entries(links)) {
+        if (engine.options.localForelinks !== false && frontier.has(link.sourcePath)) {
+          includedLinks.add(key);
+          if (!includedNodes.has(link.targetPath)) {
+            includedNodes.add(link.targetPath);
+            nextFrontier.add(link.targetPath);
+          }
+        }
+
+        if (engine.options.localBacklinks !== false && frontier.has(link.targetPath)) {
+          includedLinks.add(key);
+          if (!includedNodes.has(link.sourcePath)) {
+            includedNodes.add(link.sourcePath);
+            nextFrontier.add(link.sourcePath);
+          }
+        }
+      }
+
+      frontier = nextFrontier;
     }
 
-    const localFile = engine.options?.localFile;
-    if (!localFile) {
-      return true;
+    if (engine.options.localInterlinks === true) {
+      for (const [key, link] of Object.entries(links)) {
+        if (includedNodes.has(link.sourcePath) && includedNodes.has(link.targetPath)) {
+          includedLinks.add(key);
+        }
+      }
     }
 
-    if (sourcePath === localFile) {
-      return engine.options.localForelinks !== false;
+    const filteredLinks = {};
+    for (const key of includedLinks) {
+      filteredLinks[key] = links[key];
     }
-    if (targetPath === localFile) {
-      return engine.options.localBacklinks !== false;
-    }
-
-    return engine.options.localInterlinks === true && !!data.nodes[sourcePath] && !!data.nodes[targetPath];
+    return filteredLinks;
   }
 
   shouldAllowGraphNode(engine, path) {

@@ -25,7 +25,9 @@ const GRAPH_NODE_DIAMETER = GRAPH_NODE_RADIUS * 2;
 
 module.exports = class CluddleGraphsPlugin extends Plugin {
   onload() {
+    this.unloaded = false;
     this.canvasGraph = new CanvasGraphController(this);
+    this.syncTimeouts = new Set();
     this.pendingLeaves = new WeakSet();
     this.enginePatches = new WeakMap();
     this.rendererPatches = new WeakMap();
@@ -35,24 +37,49 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.displayControls = new WeakMap();
     this.resetButtonPatches = new WeakMap();
 
-    const syncSoon = () => {
-      window.setTimeout(() => this.syncGraphViews(), 0);
-      window.setTimeout(() => this.syncGraphViews(), 250);
-    };
+    const syncSoon = () => this.scheduleGraphSync();
 
-    this.app.workspace.onLayoutReady(syncSoon);
+    this.app.workspace.onLayoutReady(() => {
+      if (this.unloaded) {
+        return;
+      }
+
+      this.canvasGraph.onload();
+      syncSoon();
+    });
     this.registerEvent(this.app.workspace.on("layout-change", syncSoon));
     this.registerEvent(this.app.workspace.on("active-leaf-change", syncSoon));
-    this.canvasGraph.onload();
   }
 
   onunload() {
+    this.unloaded = true;
+    for (const timeoutId of this.syncTimeouts) {
+      window.clearTimeout(timeoutId);
+    }
+    this.syncTimeouts.clear();
+
     this.app.workspace.iterateAllLeaves((leaf) => {
       this.restoreGraphEngine(this.getGraphEngine(leaf?.view));
     });
   }
 
+  scheduleGraphSync() {
+    for (const delay of [0, 250]) {
+      const timeoutId = window.setTimeout(() => {
+        this.syncTimeouts.delete(timeoutId);
+        if (!this.unloaded) {
+          this.syncGraphViews();
+        }
+      }, delay);
+      this.syncTimeouts.add(timeoutId);
+    }
+  }
+
   syncGraphViews() {
+    if (this.unloaded) {
+      return;
+    }
+
     this.enforceLocalGraphDepth();
     this.app.workspace.iterateAllLeaves((leaf) => {
       const engine = this.getGraphEngine(leaf?.view);
@@ -350,6 +377,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.removeGraphPanelControls(engine);
     this.clearRendererSearchHighlights(engine.renderer);
     this.restoreRenderer(engine.renderer);
+    engine.render?.();
   }
 
   restoreGraphResetButton(engine) {

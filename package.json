@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "build": "node scripts/build.js",
-    "check": "npm run build && node --check main.js"
+    "check": "node scripts/build.js --check && node --check main.js"
   },
   "keywords": [
     "obsidian",
