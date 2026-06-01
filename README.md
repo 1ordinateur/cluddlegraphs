@@ -12,6 +12,9 @@ Cluddle Graphs adds a highlight mode to Obsidian's graph view search. It is desi
 - **Default mode preserved**: Turn **Highlight search matches** off to return to Obsidian's default graph search behavior.
 - **Reset confirmation**: Adds a confirmation step to the graph settings reset button so graph filters, groups, display options, and forces are not reset accidentally.
 - **Local graph depth**: Keeps local graph depth at `2` for local graph panes.
+- **Canvas graph links**: Adds links from `.canvas` edges to graph and local graph views by reading `.canvas` files directly.
+- **Canvas card nodes**: Shows graph-only nodes for Canvas text, link, and group cards connected by Canvas edges.
+- **Canvas visual controls**: Adds built-in graph panel controls for Canvas link visibility, Canvas card visibility, Canvas link color, and Canvas item node shapes.
 
 ## Usage
 
@@ -22,6 +25,13 @@ Cluddle Graphs adds a highlight mode to Obsidian's graph view search. It is desi
 5. In **Display**, use **Highlighted hit nodes** to pick the color used for direct search hits.
 
 When highlight mode is enabled, the search query still uses Obsidian's graph search parser. Existing graph group queries and colors continue to work. Search terms that match files are highlighted while the rest of the graph remains present for context.
+
+Canvas graph links are available from the same graph settings panel:
+
+- In **Filters**, use **Canvas links** to show all graph links, hide Canvas links, or isolate Canvas links.
+- In **Filters**, turn **Canvas cards** on or off to control graph-only Canvas text, link, and group card nodes.
+- In **Display**, use **Canvas links** to choose the fallback link color. Canvas edge colors are used when the Canvas edge has a color.
+- In **Display**, choose shapes for Canvas file, text, link, and group nodes.
 
 ## Reset confirmation
 
@@ -36,7 +46,7 @@ If the confirmation is not clicked, it disappears after a short delay and no res
 
 ## Scope
 
-This plugin only changes Obsidian graph and local graph views. It does not change canvas behavior, note files, links, metadata, or search results outside the graph panel.
+This plugin only changes Obsidian graph and local graph views. It does not change canvas behavior, note files, links, metadata, or search results outside the graph panel. Canvas graph links are built by reading `.canvas` files directly and resolving file nodes through Obsidian's metadata cache.
 
 ## Privacy
 
@@ -56,7 +66,13 @@ Clone or copy this repository into your vault's plugin folder:
 .obsidian/plugins/cluddlegraphs
 ```
 
-Then enable **Cluddle Graphs** from **Settings -> Community plugins**.
+Development source lives in `src/`. The root `main.js` file is generated release output. After editing source files, rebuild the plugin bundle:
+
+```bash
+npm run build
+```
+
+Then enable or reload **Cluddle Graphs** from **Settings -> Community plugins**.
 
 ## Release checklist
 
