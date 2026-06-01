@@ -1,7 +1,7 @@
 {
   "id": "cluddlegraphsearch",
   "name": "cluddlegraphsearch",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "minAppVersion": "1.12.7",
   "description": "Set local graph depth and highlight graph search matches from the graph panel.",
   "author": "Local vault",

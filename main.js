@@ -10,6 +10,9 @@ const SEARCH_HIGHLIGHT_COLOR_CLASS = "cluddlegraphsearch-search-highlight-color"
 const SEARCH_HIGHLIGHT_COLOR_MARKER = "__cluddlegraphsearchSearchHit";
 const SEARCH_HIGHLIGHT_DEFAULT_COLOR = "#ff2d55";
 const LEGACY_SEARCH_HIGHLIGHT_SENTINEL = { a: 1, rgb: 0xff00ff };
+const RESET_CONFIRM_BUTTON_CLASS = "cluddlegraphsearch-reset-confirm";
+const RESET_CONFIRMING_CLASS = "cluddlegraphsearch-reset-confirming";
+const RESET_CONFIRM_TIMEOUT_MS = 5000;
 
 module.exports = class CluddleGraphSearchPlugin extends Plugin {
   onload() {
@@ -20,6 +23,7 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
     this.linkPatches = new WeakMap();
     this.filterControls = new WeakMap();
     this.displayControls = new WeakMap();
+    this.resetButtonPatches = new WeakMap();
 
     const syncSoon = () => {
       window.setTimeout(() => this.syncGraphViews(), 0);
@@ -48,6 +52,7 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
       this.initializeSearchHighlightOptions(engine);
       this.addGraphPanelToggle(engine);
       this.addGraphDisplayColorPicker(engine);
+      this.patchGraphResetButton(engine);
       this.patchGraphEngine(engine);
       this.syncRendererSearchHighlights(engine);
     });
@@ -181,6 +186,68 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
     }
   }
 
+  patchGraphResetButton(engine) {
+    if (this.resetButtonPatches.has(engine)) {
+      return;
+    }
+
+    const resetButton = engine.controlsEl?.querySelector?.(".graph-controls-button.mod-reset");
+    if (!resetButton) {
+      return;
+    }
+
+    const state = {
+      confirmButton: null,
+      timeoutId: null
+    };
+
+    const clearConfirmation = () => {
+      if (state.timeoutId !== null) {
+        window.clearTimeout(state.timeoutId);
+        state.timeoutId = null;
+      }
+
+      this.detachElement(state.confirmButton);
+      state.confirmButton = null;
+      resetButton.classList?.remove(RESET_CONFIRMING_CLASS);
+    };
+
+    const confirmReset = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      clearConfirmation();
+      this.resetGraphOptions(engine);
+    };
+
+    const onResetClick = (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      if (state.confirmButton) {
+        return;
+      }
+
+      state.confirmButton = this.createResetConfirmButton(resetButton, confirmReset);
+      resetButton.classList?.add(RESET_CONFIRMING_CLASS);
+      state.timeoutId = window.setTimeout(clearConfirmation, RESET_CONFIRM_TIMEOUT_MS);
+    };
+
+    resetButton.addEventListener("click", onResetClick, true);
+    this.resetButtonPatches.set(engine, { resetButton, onResetClick, clearConfirmation });
+  }
+
+  createResetConfirmButton(resetButton, onClick) {
+    const doc = resetButton.ownerDocument ?? document;
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.textContent = "Are you sure?";
+    button.classList.add(RESET_CONFIRM_BUTTON_CLASS, "mod-warning");
+    button.setAttribute("aria-label", "Confirm graph reset");
+    button.addEventListener("click", onClick);
+    resetButton.parentElement?.insertBefore(button, resetButton.nextSibling);
+    return button;
+  }
+
   setHighlightMode(engine, enabled) {
     engine.options[SEARCH_HIGHLIGHT_OPTION] = enabled;
     engine.onOptionsChange?.();
@@ -266,9 +333,21 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
       this.enginePatches.delete(engine);
     }
 
+    this.restoreGraphResetButton(engine);
     this.removeGraphPanelControls(engine);
     this.clearRendererSearchHighlights(engine.renderer);
     this.restoreRenderer(engine.renderer);
+  }
+
+  restoreGraphResetButton(engine) {
+    const patch = this.resetButtonPatches.get(engine);
+    if (!patch) {
+      return;
+    }
+
+    patch.clearConfirmation();
+    patch.resetButton.removeEventListener("click", patch.onResetClick, true);
+    this.resetButtonPatches.delete(engine);
   }
 
   removeGraphPanelControls(engine) {
@@ -294,6 +373,15 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
     } else {
       element?.remove?.();
     }
+  }
+
+  resetGraphOptions(engine) {
+    engine.filterOptions?.setDefaultOptions?.();
+    engine.colorGroupOptions?.setColorQueries?.([]);
+    engine.displayOptions?.setDefaultOptions?.();
+    engine.forceOptions?.setDefaultOptions?.();
+    engine.onOptionsChange?.();
+    this.enforceLocalGraphDepth();
   }
 
   prepareQueriesForSearchHighlight(engine, queries) {
