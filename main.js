@@ -4,8 +4,12 @@ const TARGET_DEPTH = 2;
 const GRAPH_VIEW_TYPE = "graph";
 const LOCAL_GRAPH_VIEW_TYPE = "localgraph";
 const SEARCH_HIGHLIGHT_OPTION = "searchHighlightMode";
+const SEARCH_HIGHLIGHT_COLOR_OPTION = "searchHighlightColor";
 const SEARCH_HIGHLIGHT_TOGGLE_CLASS = "cluddlegraphsearch-search-highlight-toggle";
-const SEARCH_HIGHLIGHT_SENTINEL = { a: 1, rgb: 0xff00ff };
+const SEARCH_HIGHLIGHT_COLOR_CLASS = "cluddlegraphsearch-search-highlight-color";
+const SEARCH_HIGHLIGHT_COLOR_MARKER = "__cluddlegraphsearchSearchHit";
+const SEARCH_HIGHLIGHT_DEFAULT_COLOR = "#ff2d55";
+const LEGACY_SEARCH_HIGHLIGHT_SENTINEL = { a: 1, rgb: 0xff00ff };
 
 module.exports = class CluddleGraphSearchPlugin extends Plugin {
   onload() {
@@ -14,6 +18,8 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
     this.rendererPatches = new WeakMap();
     this.nodePatches = new WeakMap();
     this.linkPatches = new WeakMap();
+    this.filterControls = new WeakMap();
+    this.displayControls = new WeakMap();
 
     const syncSoon = () => {
       window.setTimeout(() => this.syncGraphViews(), 0);
@@ -39,7 +45,9 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
         return;
       }
 
+      this.initializeSearchHighlightOptions(engine);
       this.addGraphPanelToggle(engine);
+      this.addGraphDisplayColorPicker(engine);
       this.patchGraphEngine(engine);
       this.syncRendererSearchHighlights(engine);
     });
@@ -82,9 +90,16 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
   addGraphPanelToggle(engine) {
     const filterOptions = engine.filterOptions;
     const childrenEl = filterOptions?.childrenEl;
-    if (!childrenEl || childrenEl.querySelector?.(`.${SEARCH_HIGHLIGHT_TOGGLE_CLASS}`)) {
+    if (!childrenEl) {
       return;
     }
+
+    const trackedControlEl = this.filterControls.get(engine)?.settingEl;
+    if (trackedControlEl?.parentElement === childrenEl) {
+      return;
+    }
+
+    this.removeDetachedControl(childrenEl, SEARCH_HIGHLIGHT_TOGGLE_CLASS, trackedControlEl);
 
     const setting = new Setting(childrenEl)
       .setName("Highlight search matches")
@@ -96,6 +111,15 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
           .onChange((enabled) => {
             this.setHighlightMode(engine, enabled);
           });
+
+        filterOptions.optionListeners[SEARCH_HIGHLIGHT_OPTION] = (value) => {
+          if (typeof value === "boolean") {
+            engine.options[SEARCH_HIGHLIGHT_OPTION] = value;
+            toggle.setValue(value);
+            this.refreshGraphSearch(engine);
+          }
+          return this.isHighlightModeEnabled(engine);
+        };
       });
 
     const searchSettingEl = filterOptions.searchSetting?.settingEl;
@@ -103,6 +127,58 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
       childrenEl.insertBefore(setting.settingEl, searchSettingEl.nextSibling);
     } else if (searchSettingEl) {
       childrenEl.appendChild(setting.settingEl);
+    }
+
+    this.filterControls.set(engine, setting);
+  }
+
+  addGraphDisplayColorPicker(engine) {
+    const displayOptions = engine.displayOptions;
+    const childrenEl = displayOptions?.childrenEl;
+    if (!childrenEl) {
+      return;
+    }
+
+    const trackedControlEl = this.displayControls.get(engine)?.settingEl;
+    if (trackedControlEl?.parentElement === childrenEl) {
+      return;
+    }
+
+    this.removeDetachedControl(childrenEl, SEARCH_HIGHLIGHT_COLOR_CLASS, trackedControlEl);
+
+    const setting = new Setting(childrenEl)
+      .setName("Highlighted hit nodes")
+      .setClass(SEARCH_HIGHLIGHT_COLOR_CLASS)
+      .addColorPicker((colorPicker) => {
+        colorPicker
+          .setValue(this.getSearchHighlightColorHex(engine))
+          .onChange((value) => {
+            this.setSearchHighlightColor(engine, value);
+          });
+
+        displayOptions.optionListeners[SEARCH_HIGHLIGHT_COLOR_OPTION] = (value) => {
+          if (typeof value === "string") {
+            const color = this.normalizeHexColor(value);
+            if (color) {
+              engine.options[SEARCH_HIGHLIGHT_COLOR_OPTION] = color;
+              colorPicker.setValue(color);
+              this.refreshGraphSearch(engine);
+              engine.renderer?.changed?.();
+            }
+          }
+          return this.getSearchHighlightColorHex(engine);
+        };
+      });
+
+    childrenEl.insertBefore(setting.settingEl, childrenEl.firstChild);
+    this.displayControls.set(engine, setting);
+  }
+
+  removeDetachedControl(childrenEl, controlClass, trackedEl) {
+    for (const existingEl of childrenEl.querySelectorAll?.(`.${controlClass}`) ?? []) {
+      if (existingEl !== trackedEl) {
+        this.detachElement(existingEl);
+      }
     }
   }
 
@@ -112,8 +188,39 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
     this.refreshGraphSearch(engine);
   }
 
+  setSearchHighlightColor(engine, value) {
+    const color = this.normalizeHexColor(value);
+    if (!color) {
+      return;
+    }
+
+    engine.options[SEARCH_HIGHLIGHT_COLOR_OPTION] = color;
+    engine.onOptionsChange?.();
+    this.refreshGraphSearch(engine);
+    engine.renderer?.changed?.();
+  }
+
   isHighlightModeEnabled(engine) {
     return engine.options?.[SEARCH_HIGHLIGHT_OPTION] === true;
+  }
+
+  initializeSearchHighlightOptions(engine) {
+    const savedOptions = this.getSavedGraphOptions(engine);
+
+    if (typeof engine.options?.[SEARCH_HIGHLIGHT_OPTION] !== "boolean") {
+      engine.options[SEARCH_HIGHLIGHT_OPTION] = savedOptions?.[SEARCH_HIGHLIGHT_OPTION] === true;
+    }
+
+    const savedColor = this.normalizeHexColor(savedOptions?.[SEARCH_HIGHLIGHT_COLOR_OPTION]);
+    const currentColor = this.normalizeHexColor(engine.options?.[SEARCH_HIGHLIGHT_COLOR_OPTION]);
+    engine.options[SEARCH_HIGHLIGHT_COLOR_OPTION] = currentColor ?? savedColor ?? SEARCH_HIGHLIGHT_DEFAULT_COLOR;
+  }
+
+  getSavedGraphOptions(engine) {
+    if (engine.view?.getViewType?.() === LOCAL_GRAPH_VIEW_TYPE) {
+      return engine.view?.leaf?.getViewState?.()?.state?.options ?? engine.view?.getState?.()?.options;
+    }
+    return this.app.internalPlugins?.getPluginById?.("graph")?.instance?.options;
   }
 
   patchGraphEngine(engine) {
@@ -160,8 +267,34 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
       this.enginePatches.delete(engine);
     }
 
+    this.removeGraphPanelControls(engine);
     this.clearRendererSearchHighlights(engine.renderer);
     this.restoreRenderer(engine.renderer);
+  }
+
+  removeGraphPanelControls(engine) {
+    const filterControl = this.filterControls.get(engine);
+    if (filterControl) {
+      this.detachElement(filterControl.settingEl);
+      this.filterControls.delete(engine);
+    }
+
+    const displayControl = this.displayControls.get(engine);
+    if (displayControl) {
+      this.detachElement(displayControl.settingEl);
+      this.displayControls.delete(engine);
+    }
+
+    delete engine.filterOptions?.optionListeners?.[SEARCH_HIGHLIGHT_OPTION];
+    delete engine.displayOptions?.optionListeners?.[SEARCH_HIGHLIGHT_COLOR_OPTION];
+  }
+
+  detachElement(element) {
+    if (typeof element?.detach === "function") {
+      element.detach();
+    } else {
+      element?.remove?.();
+    }
   }
 
   prepareQueriesForSearchHighlight(engine, queries) {
@@ -174,7 +307,7 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
         return query;
       }
 
-      return { ...query, color: SEARCH_HIGHLIGHT_SENTINEL };
+      return { ...query, color: this.createSearchHighlightColor(engine) };
     });
   }
 
@@ -199,6 +332,7 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
     }
 
     const ids = this.getCurrentSearchMatchIds(engine);
+    renderer.searchHighlightColor = this.createSearchHighlightColor(engine);
     renderer.searchHighlightNodeIds = ids;
     renderer.searchHighlightNodes = new Set(
       Array.from(ids)
@@ -224,8 +358,11 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
   isSearchHighlightSentinel(value) {
     return !!value
       && typeof value === "object"
-      && value.a === SEARCH_HIGHLIGHT_SENTINEL.a
-      && value.rgb === SEARCH_HIGHLIGHT_SENTINEL.rgb;
+      && (value[SEARCH_HIGHLIGHT_COLOR_MARKER] === true
+        || (
+          value.a === LEGACY_SEARCH_HIGHLIGHT_SENTINEL.a
+          && value.rgb === LEGACY_SEARCH_HIGHLIGHT_SENTINEL.rgb
+        ));
   }
 
   clearRendererSearchHighlights(renderer) {
@@ -233,9 +370,10 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
       return;
     }
 
-    if (renderer.searchHighlightNodeIds?.size || renderer.searchHighlightNodes?.size) {
+    if (renderer.searchHighlightNodeIds?.size || renderer.searchHighlightNodes?.size || renderer.searchHighlightColor) {
       renderer.searchHighlightNodeIds = new Set();
       renderer.searchHighlightNodes = new Set();
+      renderer.searchHighlightColor = null;
       renderer.changed?.();
     }
   }
@@ -263,6 +401,7 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
 
     renderer.searchHighlightNodeIds = new Set();
     renderer.searchHighlightNodes = new Set();
+    renderer.searchHighlightColor = null;
     this.rendererPatches.set(renderer, { getHighlightNode: originalGetHighlightNode });
   }
 
@@ -296,6 +435,9 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
       const previousHighlightNode = renderer.highlightNode;
       renderer.highlightNode = searchHighlightNode;
       try {
+        if (plugin.isSearchHighlightedNode(renderer, this)) {
+          return plugin.renderWithSearchHighlightColor(renderer, () => originalRender.apply(this, args));
+        }
         return originalRender.apply(this, args);
       } finally {
         renderer.highlightNode = previousHighlightNode;
@@ -346,6 +488,7 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
       delete renderer.isSearchRelatedNode;
       delete renderer.searchHighlightNodeIds;
       delete renderer.searchHighlightNodes;
+      delete renderer.searchHighlightColor;
       this.rendererPatches.delete(renderer);
     }
 
@@ -425,6 +568,53 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
       return link.target;
     }
     return firstHighlight;
+  }
+
+  renderWithSearchHighlightColor(renderer, renderNode) {
+    const color = renderer.searchHighlightColor;
+    const colors = renderer.colors;
+    if (!color || !colors?.fillHighlight) {
+      return renderNode();
+    }
+
+    const previousFillHighlight = colors.fillHighlight;
+    colors.fillHighlight = color;
+    try {
+      return renderNode();
+    } finally {
+      colors.fillHighlight = previousFillHighlight;
+    }
+  }
+
+  createSearchHighlightColor(engine) {
+    return {
+      a: 1,
+      rgb: this.hexToRgb(this.getSearchHighlightColorHex(engine)),
+      [SEARCH_HIGHLIGHT_COLOR_MARKER]: true
+    };
+  }
+
+  getSearchHighlightColorHex(engine) {
+    return this.normalizeHexColor(engine.options?.[SEARCH_HIGHLIGHT_COLOR_OPTION]) ?? SEARCH_HIGHLIGHT_DEFAULT_COLOR;
+  }
+
+  normalizeHexColor(value) {
+    if (typeof value !== "string") {
+      return null;
+    }
+
+    const color = value.trim();
+    if (/^#[0-9a-f]{6}$/i.test(color)) {
+      return color.toLowerCase();
+    }
+    if (/^[0-9a-f]{6}$/i.test(color)) {
+      return `#${color.toLowerCase()}`;
+    }
+    return null;
+  }
+
+  hexToRgb(color) {
+    return parseInt(color.slice(1), 16);
   }
 
   refreshGraphSearch(engine) {
