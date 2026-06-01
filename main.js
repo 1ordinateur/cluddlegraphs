@@ -96,6 +96,7 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
 
     const trackedControlEl = this.filterControls.get(engine)?.settingEl;
     if (trackedControlEl?.parentElement === childrenEl) {
+      this.placeSearchHighlightToggle(childrenEl, trackedControlEl);
       return;
     }
 
@@ -122,14 +123,12 @@ module.exports = class CluddleGraphSearchPlugin extends Plugin {
         };
       });
 
-    const searchSettingEl = filterOptions.searchSetting?.settingEl;
-    if (searchSettingEl?.nextSibling) {
-      childrenEl.insertBefore(setting.settingEl, searchSettingEl.nextSibling);
-    } else if (searchSettingEl) {
-      childrenEl.appendChild(setting.settingEl);
-    }
-
+    this.placeSearchHighlightToggle(childrenEl, setting.settingEl);
     this.filterControls.set(engine, setting);
+  }
+
+  placeSearchHighlightToggle(childrenEl, settingEl) {
+    childrenEl.appendChild(settingEl);
   }
 
   addGraphDisplayColorPicker(engine) {
