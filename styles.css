@@ -1,0 +1,46 @@
+.cluddlegraphs-canvas-options-group {
+  border-top: 1px solid var(--background-modifier-border);
+  margin: 0;
+  padding: var(--size-2-2) 0;
+}
+
+.cluddlegraphs-canvas-options-group-summary {
+  align-items: center;
+  color: var(--text-normal);
+  cursor: pointer;
+  display: flex;
+  font-weight: var(--font-semibold);
+  gap: var(--size-2-2);
+  list-style: none;
+  min-height: var(--input-height);
+}
+
+.cluddlegraphs-canvas-options-group-summary::-webkit-details-marker {
+  display: none;
+}
+
+.cluddlegraphs-canvas-options-group-summary::before {
+  color: var(--text-faint);
+  content: ">";
+  font-size: var(--font-ui-large);
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 120ms ease-in-out;
+}
+
+.cluddlegraphs-canvas-options-group[open] > .cluddlegraphs-canvas-options-group-summary::before {
+  transform: rotate(90deg);
+}
+
+.cluddlegraphs-canvas-options-group-content {
+  padding-left: var(--size-4-3);
+}
+
+.cluddlegraphs-canvas-options-group-content .setting-item {
+  border-top: 0;
+  padding: var(--size-2-3) 0;
+}
+
+.cluddlegraphs-native-canvas-links .setting-item-description {
+  display: none;
+}

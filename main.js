@@ -357,6 +357,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     };
 
     engine.render = function(...args) {
+      plugin.syncCanvasGraphSearchMatches(this);
       const result = originalRender.apply(this, args);
       plugin.syncRendererSearchHighlights(this);
       return result;
@@ -443,6 +444,13 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 
       return { ...query, color: this.createSearchHighlightColor(engine) };
     });
+  }
+
+  syncCanvasGraphSearchMatches(engine) {
+    const matchValue = this.isHighlightModeEnabled(engine)
+      ? this.createSearchHighlightColor(engine)
+      : true;
+    this.canvasGraph.syncSearchMatches(engine, matchValue);
   }
 
   syncRendererSearchHighlights(engine) {
@@ -938,7 +946,19 @@ const CANVAS_NODE_SHAPE_DEFAULTS = {
 };
 const CANVAS_NODE_TYPES = ["file", "text", "link", "group"];
 const CANVAS_SHAPES = ["circle", "triangle", "square", "pentagon", "hexagon"];
+const CANVAS_NODE_TYPE_LABELS = {
+  file: "File nodes",
+  text: "Text cards",
+  link: "Link cards",
+  group: "Group cards"
+};
 const CANVAS_GRAPH_ONLY_NODE_PREFIX = "cluddlegraphs-canvas-node";
+const CANVAS_OPTIONS_GROUP_CLASS = "cluddlegraphs-canvas-options-group";
+const CANVAS_FILTER_GROUP_CLASS = "cluddlegraphs-canvas-filter-group";
+const CANVAS_DISPLAY_GROUP_CLASS = "cluddlegraphs-canvas-display-group";
+const CANVAS_OPTIONS_GROUP_SUMMARY_CLASS = "cluddlegraphs-canvas-options-group-summary";
+const CANVAS_OPTIONS_GROUP_CONTENT_CLASS = "cluddlegraphs-canvas-options-group-content";
+const NATIVE_CANVAS_LINKS_CLASS = "cluddlegraphs-native-canvas-links";
 const CANVAS_LINK_MODE_CLASS = "cluddlegraphs-canvas-link-mode";
 const CANVAS_CARDS_CLASS = "cluddlegraphs-canvas-cards";
 const CANVAS_GROUP_MEMBERSHIPS_CLASS = "cluddlegraphs-canvas-group-memberships";
@@ -967,7 +987,10 @@ module.exports = class CanvasGraphController {
     this.plugin = plugin;
     this.rendererPatches = new WeakMap();
     this.filterControls = new WeakMap();
+    this.filterGroups = new WeakMap();
     this.displayControls = new WeakMap();
+    this.displayGroups = new WeakMap();
+    this.searchMatches = new WeakMap();
     this.canvasGraphLinks = {};
     this.canvasGraphNodes = {};
     this.hydration = null;
@@ -1025,6 +1048,7 @@ module.exports = class CanvasGraphController {
       this.rendererPatches.delete(renderer);
     }
 
+    this.clearSearchMatches(engine);
     this.removeControls(engine);
     this.clearRendererMetadata(renderer);
   }
@@ -1064,8 +1088,12 @@ module.exports = class CanvasGraphController {
       return;
     }
 
+    const group = this.ensureCanvasOptionsGroup(engine, childrenEl, this.filterGroups, CANVAS_FILTER_GROUP_CLASS);
+    group.nativeControlEl = this.syncNativeCanvasLinksControl(childrenEl, group.contentEl);
+    const contentEl = group.contentEl;
+
     const trackedControls = this.filterControls.get(engine);
-    if (trackedControls?.every((setting) => setting.settingEl.parentElement === childrenEl)) {
+    if (trackedControls?.every((setting) => setting.settingEl.parentElement === contentEl)) {
       return;
     }
 
@@ -1075,8 +1103,8 @@ module.exports = class CanvasGraphController {
       trackedControls
     );
 
-    const linkModeSetting = new Setting(childrenEl)
-      .setName("Canvas links")
+    const linkModeSetting = new Setting(contentEl)
+      .setName("Edge links")
       .setClass(CANVAS_LINK_MODE_CLASS)
       .addDropdown((dropdown) => {
         for (const [value, label] of Object.entries(CANVAS_LINK_MODE_LABELS)) {
@@ -1102,8 +1130,8 @@ module.exports = class CanvasGraphController {
         };
       });
 
-    const cardsSetting = new Setting(childrenEl)
-      .setName("Canvas cards")
+    const cardsSetting = new Setting(contentEl)
+      .setName("Cards")
       .setClass("mod-toggle")
       .setClass(CANVAS_CARDS_CLASS)
       .addToggle((toggle) => {
@@ -1125,8 +1153,8 @@ module.exports = class CanvasGraphController {
         };
       });
 
-    const groupMembershipSetting = new Setting(childrenEl)
-      .setName("Canvas groups")
+    const groupMembershipSetting = new Setting(contentEl)
+      .setName("Groups")
       .setClass("mod-toggle")
       .setClass(CANVAS_GROUP_MEMBERSHIPS_CLASS)
       .addToggle((toggle) => {
@@ -1158,8 +1186,14 @@ module.exports = class CanvasGraphController {
       return;
     }
 
+    const group = this.ensureCanvasOptionsGroup(engine, childrenEl, this.displayGroups, CANVAS_DISPLAY_GROUP_CLASS);
+    if (group.groupEl.parentElement === childrenEl && childrenEl.firstChild !== group.groupEl) {
+      childrenEl.insertBefore(group.groupEl, childrenEl.firstChild);
+    }
+    const contentEl = group.contentEl;
+
     const trackedControls = this.displayControls.get(engine);
-    if (trackedControls?.every((setting) => setting.settingEl.parentElement === childrenEl)) {
+    if (trackedControls?.every((setting) => setting.settingEl.parentElement === contentEl)) {
       return;
     }
 
@@ -1169,8 +1203,8 @@ module.exports = class CanvasGraphController {
       trackedControls
     );
 
-    const colorSetting = new Setting(childrenEl)
-      .setName("Canvas links")
+    const colorSetting = new Setting(contentEl)
+      .setName("Link color")
       .setClass(CANVAS_LINK_COLOR_CLASS)
       .addColorPicker((colorPicker) => {
         colorPicker
@@ -1197,14 +1231,14 @@ module.exports = class CanvasGraphController {
         };
       });
 
-    const shapeSettings = CANVAS_NODE_TYPES.map((type) => this.addShapeControl(engine, displayOptions, childrenEl, type));
+    const shapeSettings = CANVAS_NODE_TYPES.map((type) => this.addShapeControl(engine, displayOptions, contentEl, type));
     this.displayControls.set(engine, [colorSetting, ...shapeSettings]);
   }
 
   addShapeControl(engine, displayOptions, childrenEl, type) {
     const option = CANVAS_NODE_SHAPE_OPTIONS[type];
     const setting = new Setting(childrenEl)
-      .setName(`Canvas ${type} nodes`)
+      .setName(CANVAS_NODE_TYPE_LABELS[type] ?? `${this.toTitleCase(type)} nodes`)
       .setClass(`${CANVAS_NODE_SHAPE_CLASS_PREFIX}-${type}`)
       .addDropdown((dropdown) => {
         for (const [value, label] of Object.entries(CANVAS_SHAPE_LABELS)) {
@@ -1242,6 +1276,8 @@ module.exports = class CanvasGraphController {
     }
     this.filterControls.delete(engine);
     this.displayControls.delete(engine);
+    this.removeCanvasFilterGroup(engine);
+    this.removeCanvasDisplayGroup(engine);
 
     delete engine?.filterOptions?.optionListeners?.[CANVAS_LINK_MODE_OPTION];
     delete engine?.filterOptions?.optionListeners?.[CANVAS_CARDS_OPTION];
@@ -1263,6 +1299,131 @@ module.exports = class CanvasGraphController {
     }
   }
 
+  ensureCanvasOptionsGroup(engine, childrenEl, groupMap, specificClass) {
+    const existing = groupMap.get(engine);
+    if (existing?.groupEl?.parentElement === childrenEl && existing.contentEl) {
+      return existing;
+    }
+
+    const doc = childrenEl.ownerDocument ?? document;
+    let groupEl = childrenEl.querySelector?.(`.${specificClass}`);
+    if (!groupEl) {
+      groupEl = doc.createElement("details");
+      groupEl.classList.add(CANVAS_OPTIONS_GROUP_CLASS, specificClass);
+
+      const summaryEl = doc.createElement("summary");
+      summaryEl.classList.add(CANVAS_OPTIONS_GROUP_SUMMARY_CLASS);
+      summaryEl.textContent = "Canvas";
+
+      const contentEl = doc.createElement("div");
+      contentEl.classList.add(CANVAS_OPTIONS_GROUP_CONTENT_CLASS);
+
+      groupEl.appendChild(summaryEl);
+      groupEl.appendChild(contentEl);
+      childrenEl.appendChild(groupEl);
+    }
+
+    let contentEl = groupEl.querySelector?.(`.${CANVAS_OPTIONS_GROUP_CONTENT_CLASS}`);
+    if (!contentEl) {
+      contentEl = doc.createElement("div");
+      contentEl.classList.add(CANVAS_OPTIONS_GROUP_CONTENT_CLASS);
+      groupEl.appendChild(contentEl);
+    }
+
+    const group = { groupEl, contentEl };
+    groupMap.set(engine, group);
+    return group;
+  }
+
+  syncNativeCanvasLinksControl(childrenEl, contentEl) {
+    const settingEl = this.findNativeCanvasLinksControl(childrenEl);
+    if (!settingEl) {
+      return null;
+    }
+
+    this.compactNativeCanvasLinksControl(settingEl);
+    if (settingEl.parentElement !== contentEl) {
+      contentEl.insertBefore(settingEl, contentEl.firstChild);
+    }
+    return settingEl;
+  }
+
+  findNativeCanvasLinksControl(childrenEl) {
+    const existing = childrenEl.querySelector?.(`.${NATIVE_CANVAS_LINKS_CLASS}`);
+    if (existing) {
+      return existing;
+    }
+
+    for (const settingEl of childrenEl.querySelectorAll?.(".setting-item") ?? []) {
+      if (settingEl.classList.contains(CANVAS_OPTIONS_GROUP_CLASS)
+        || settingEl.classList.contains(CANVAS_LINK_MODE_CLASS)
+        || settingEl.classList.contains(CANVAS_CARDS_CLASS)
+        || settingEl.classList.contains(CANVAS_GROUP_MEMBERSHIPS_CLASS)) {
+        continue;
+      }
+
+      const descText = settingEl.querySelector(".setting-item-description")?.textContent ?? "";
+      if (/canvas/i.test(descText)
+        && (/show links created/i.test(descText) || /point to other canvases/i.test(descText))) {
+        return settingEl;
+      }
+    }
+
+    return null;
+  }
+
+  compactNativeCanvasLinksControl(settingEl) {
+    const nameEl = settingEl.querySelector(".setting-item-name");
+    if (nameEl && !settingEl.dataset.cluddlegraphsOriginalName) {
+      settingEl.dataset.cluddlegraphsOriginalName = nameEl.textContent ?? "";
+    }
+    if (nameEl) {
+      nameEl.textContent = "File links";
+    }
+    settingEl.classList.add(NATIVE_CANVAS_LINKS_CLASS);
+  }
+
+  restoreNativeCanvasLinksControl(settingEl) {
+    if (!settingEl) {
+      return;
+    }
+
+    const nameEl = settingEl.querySelector(".setting-item-name");
+    if (nameEl && settingEl.dataset.cluddlegraphsOriginalName !== undefined) {
+      nameEl.textContent = settingEl.dataset.cluddlegraphsOriginalName;
+      delete settingEl.dataset.cluddlegraphsOriginalName;
+    }
+    settingEl.classList.remove(NATIVE_CANVAS_LINKS_CLASS);
+  }
+
+  removeCanvasFilterGroup(engine) {
+    const group = this.filterGroups.get(engine);
+    if (!group) {
+      return;
+    }
+
+    this.restoreNativeCanvasLinksControl(group.nativeControlEl);
+    if (group.nativeControlEl?.parentElement === group.contentEl && group.groupEl.parentElement) {
+      group.groupEl.parentElement.insertBefore(group.nativeControlEl, group.groupEl);
+    }
+    this.plugin.detachElement(group.groupEl);
+    this.filterGroups.delete(engine);
+  }
+
+  removeCanvasDisplayGroup(engine) {
+    const group = this.displayGroups.get(engine);
+    if (!group) {
+      return;
+    }
+
+    this.plugin.detachElement(group.groupEl);
+    this.displayGroups.delete(engine);
+  }
+
+  toTitleCase(value) {
+    return String(value).charAt(0).toUpperCase() + String(value).slice(1);
+  }
+
   patchRenderer(engine) {
     const renderer = engine?.renderer;
     if (!renderer || this.rendererPatches.has(renderer) || typeof renderer.setData !== "function") {
@@ -1281,6 +1442,109 @@ module.exports = class CanvasGraphController {
     this.rendererPatches.set(renderer, { setData: originalSetData });
   }
 
+  syncSearchMatches(engine, matchValue = true) {
+    this.clearSearchMatches(engine);
+    if (!engine?.fileFilter || !this.shouldShowCards(engine)) {
+      return;
+    }
+
+    const searchQuery = this.getCanvasSearchQuery(engine);
+    if (!searchQuery) {
+      return;
+    }
+
+    const matches = new Set();
+    for (const [nodeId, metadata] of Object.entries(this.canvasGraphNodes)) {
+      if (metadata.type === "file" || !this.doesCanvasGraphNodeMatchSearch(metadata, searchQuery)) {
+        continue;
+      }
+
+      engine.fileFilter[nodeId] = matchValue;
+      matches.add(nodeId);
+    }
+
+    if (matches.size > 0) {
+      this.searchMatches.set(engine, matches);
+    }
+  }
+
+  clearSearchMatches(engine) {
+    const matches = this.searchMatches.get(engine);
+    if (!matches || !engine?.fileFilter) {
+      this.searchMatches.delete(engine);
+      return;
+    }
+
+    for (const nodeId of matches) {
+      delete engine.fileFilter[nodeId];
+    }
+    this.searchMatches.delete(engine);
+  }
+
+  getCanvasSearchQuery(engine) {
+    return String(engine?.filterOptions?.search?.getValue?.() ?? "").trim();
+  }
+
+  doesCanvasGraphNodeMatchSearch(metadata, searchQuery) {
+    const tokens = this.parseCanvasSearchTokens(searchQuery);
+    if (tokens.length === 0) {
+      return false;
+    }
+
+    for (const token of tokens) {
+      const matched = this.doesCanvasSearchTokenMatch(metadata, token);
+      if (token.negated) {
+        if (matched) {
+          return false;
+        }
+        continue;
+      }
+
+      if (!matched) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  parseCanvasSearchTokens(searchQuery) {
+    const tokens = [];
+    const tokenPattern = /(-)?(?:(\w+):)?(?:"([^"]+)"|(\S+))/g;
+    for (const match of searchQuery.matchAll(tokenPattern)) {
+      const value = String(match[3] ?? match[4] ?? "").trim().toLowerCase();
+      if (!value) {
+        continue;
+      }
+
+      tokens.push({
+        negated: match[1] === "-",
+        operator: match[2]?.toLowerCase() ?? "",
+        value
+      });
+    }
+    return tokens;
+  }
+
+  doesCanvasSearchTokenMatch(metadata, token) {
+    const operator = token.operator;
+    if (operator === "path") {
+      return this.normalizeSearchText(metadata.searchPath ?? metadata.canvasPath).includes(token.value);
+    }
+    if (operator === "file" || operator === "name") {
+      return this.normalizeSearchText(metadata.label).includes(token.value);
+    }
+    if (operator) {
+      return false;
+    }
+
+    return this.normalizeSearchText(`${metadata.label ?? ""} ${metadata.searchText ?? ""}`).includes(token.value);
+  }
+
+  normalizeSearchText(value) {
+    return String(value ?? "").toLowerCase();
+  }
+
   applyCanvasLinksToGraphData(data, engine) {
     const nativeLinks = this.getGraphLinkKeys(data);
     const canvasLinks = this.getCanvasGraphLinks(data, engine);
@@ -1288,6 +1552,7 @@ module.exports = class CanvasGraphController {
 
     if (mode !== "hide") {
       this.addCanvasGraphLinks(data, engine, canvasLinks);
+      this.addCanvasSearchResultNodes(data, engine);
     }
     if (mode === "hide") {
       this.removeCanvasGraphLinks(data, canvasLinks, nativeLinks);
@@ -1657,6 +1922,8 @@ module.exports = class CanvasGraphController {
         id: resolvedFile.path,
         canvasPath,
         label: resolvedFile.basename,
+        searchPath: resolvedFile.path,
+        searchText: resolvedFile.basename,
         type: "file"
       };
     }
@@ -1669,6 +1936,8 @@ module.exports = class CanvasGraphController {
       id: this.getGraphOnlyNodeId(canvasPath, node.id),
       canvasPath,
       label: this.getGraphOnlyNodeLabel(node),
+      searchPath: canvasPath,
+      searchText: this.getGraphOnlyNodeSearchText(node),
       type: node.type
     };
   }
@@ -1677,6 +1946,8 @@ module.exports = class CanvasGraphController {
     return {
       canvasPath: node.canvasPath,
       label: node.label,
+      searchPath: node.searchPath,
+      searchText: node.searchText,
       type: node.type
     };
   }
@@ -1687,6 +1958,16 @@ module.exports = class CanvasGraphController {
     }
     if (node.type === "link") {
       return this.cleanLabel(this.getUrlLabel(node.url)) || "Link card";
+    }
+    return this.cleanLabel(node.label) || "Group";
+  }
+
+  getGraphOnlyNodeSearchText(node) {
+    if (node.type === "text") {
+      return this.cleanLabel(node.text) || "Text card";
+    }
+    if (node.type === "link") {
+      return `${this.cleanLabel(this.getUrlLabel(node.url))} ${String(node.url ?? "")}`.trim() || "Link card";
     }
     return this.cleanLabel(node.label) || "Group";
   }
@@ -1831,7 +2112,8 @@ module.exports = class CanvasGraphController {
 
   shouldAllowGraphNode(engine, path) {
     if (this.isGraphOnlyNode(path)) {
-      return this.shouldShowCards(engine);
+      return this.shouldShowCards(engine)
+        && (!engine.hasFilter || !this.getCanvasSearchQuery(engine) || !!engine.fileFilter?.[path]);
     }
     if (!engine.options?.showAttachments && this.isAttachmentPath(path)) {
       return false;
@@ -1844,6 +2126,16 @@ module.exports = class CanvasGraphController {
       return !!engine.fileFilter?.[path];
     }
     return true;
+  }
+
+  addCanvasSearchResultNodes(data, engine) {
+    if (!engine.hasFilter || !this.shouldShowCards(engine)) {
+      return;
+    }
+
+    for (const nodeId of this.searchMatches.get(engine) ?? []) {
+      this.ensureGraphNode(data, engine, nodeId);
+    }
   }
 
   addCanvasGraphLinks(data, engine, canvasLinks) {

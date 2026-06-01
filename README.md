@@ -15,6 +15,7 @@ Cluddle Graphs adds a highlight mode to Obsidian's graph view search. It is desi
 - **Canvas graph links**: Adds links from `.canvas` edges to graph and local graph views by reading `.canvas` files directly.
 - **Canvas card nodes**: Shows graph-only nodes for Canvas text, link, and group cards connected by Canvas edges.
 - **Canvas group memberships**: Adds graph links from Canvas group cards to the file, text, link, and nested group cards they contain.
+- **Canvas card search**: Makes Canvas text, link, and group cards searchable by their visible contents while inheriting the parent Canvas path for `path:` searches.
 - **Canvas visual controls**: Adds built-in graph panel controls for Canvas link visibility, Canvas card visibility, Canvas link color, and Canvas item node shapes.
 - **Canvas group metadata refresh**: Adds a settings action that caches group membership metadata inside `.canvas` files for faster future graph hydration.
 
@@ -37,6 +38,8 @@ Canvas graph links are available from the same graph settings panel:
 - In **Display**, choose shapes for Canvas file, text, link, and group nodes.
 
 Canvas group membership is calculated from strict full containment, matching the Advanced Canvas collapsible-group geometry rule. For nested or overlapping groups, each Canvas item connects to the smallest containing group, so parent groups connect to child groups instead of directly to every descendant.
+
+Canvas cards can be found from the graph search by their displayed contents. `path:` searches use the parent `.canvas` file path, so cards follow the same folder/path grouping as the Canvas file that contains them.
 
 Use **Settings -> Cluddle Graphs -> Refresh Canvas group metadata** to write cached membership data under `metadata.cluddlegraphs.groupMembership` in each `.canvas` file. The graph also falls back to dynamic calculation when cached metadata is missing or stale.
 
@@ -89,7 +92,7 @@ Before submitting to the Obsidian Community directory:
 2. Confirm `manifest.json` has the intended `id`, `name`, `version`, `minAppVersion`, `description`, `author`, and `isDesktopOnly` values.
 3. Run `npm run check`.
 4. Create a GitHub release whose tag exactly matches `manifest.json` version, for example `1.5.0`.
-5. Upload `main.js` and `manifest.json` as release assets. Upload `styles.css` only if one is added later.
+5. Upload `main.js`, `manifest.json`, and `styles.css` as release assets.
 6. Submit the GitHub repository URL through the Obsidian Community directory.
 
 ## License

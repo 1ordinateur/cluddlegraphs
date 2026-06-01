@@ -353,6 +353,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     };
 
     engine.render = function(...args) {
+      plugin.syncCanvasGraphSearchMatches(this);
       const result = originalRender.apply(this, args);
       plugin.syncRendererSearchHighlights(this);
       return result;
@@ -439,6 +440,13 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 
       return { ...query, color: this.createSearchHighlightColor(engine) };
     });
+  }
+
+  syncCanvasGraphSearchMatches(engine) {
+    const matchValue = this.isHighlightModeEnabled(engine)
+      ? this.createSearchHighlightColor(engine)
+      : true;
+    this.canvasGraph.syncSearchMatches(engine, matchValue);
   }
 
   syncRendererSearchHighlights(engine) {
