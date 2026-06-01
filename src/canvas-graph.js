@@ -148,7 +148,6 @@ module.exports = class CanvasGraphController {
 
     const linkModeSetting = new Setting(childrenEl)
       .setName("Canvas links")
-      .setDesc("Show, hide, or isolate links drawn between items inside canvases.")
       .setClass(CANVAS_LINK_MODE_CLASS)
       .addDropdown((dropdown) => {
         for (const [value, label] of Object.entries(CANVAS_LINK_MODE_LABELS)) {
@@ -176,7 +175,6 @@ module.exports = class CanvasGraphController {
 
     const cardsSetting = new Setting(childrenEl)
       .setName("Canvas cards")
-      .setDesc("Show graph-only nodes for Canvas text, link, and group cards.")
       .setClass("mod-toggle")
       .setClass(CANVAS_CARDS_CLASS)
       .addToggle((toggle) => {
@@ -221,7 +219,6 @@ module.exports = class CanvasGraphController {
 
     const colorSetting = new Setting(childrenEl)
       .setName("Canvas links")
-      .setDesc("Fallback color for Canvas graph links without a Canvas edge color.")
       .setClass(CANVAS_LINK_COLOR_CLASS)
       .addColorPicker((colorPicker) => {
         colorPicker
@@ -256,7 +253,6 @@ module.exports = class CanvasGraphController {
     const option = CANVAS_NODE_SHAPE_OPTIONS[type];
     const setting = new Setting(childrenEl)
       .setName(`Canvas ${type} nodes`)
-      .setDesc("Shape used for this Canvas item type in graph views.")
       .setClass(`${CANVAS_NODE_SHAPE_CLASS_PREFIX}-${type}`)
       .addDropdown((dropdown) => {
         for (const [value, label] of Object.entries(CANVAS_SHAPE_LABELS)) {
