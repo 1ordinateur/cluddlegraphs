@@ -36,12 +36,6 @@ const CANVAS_NODE_TYPE_LABELS = {
   link: "Link cards",
   group: "Group cards"
 };
-const CANVAS_NODE_TYPE_DESCRIPTIONS = {
-  file: "Canvas file card node shape.",
-  text: "Canvas text card node shape.",
-  link: "Canvas link card node shape.",
-  group: "Canvas group card node shape."
-};
 const CANVAS_GRAPH_ONLY_NODE_PREFIX = "cluddlegraphs-canvas-node";
 const CANVAS_OPTIONS_GROUP_CLASS = "cluddlegraphs-canvas-options-group";
 const CANVAS_FILTER_GROUP_CLASS = "cluddlegraphs-canvas-filter-group";
@@ -93,6 +87,7 @@ module.exports = class CanvasGraphController {
     this.cloudSyncFrames = new WeakMap();
     this.filterControls = new WeakMap();
     this.filterGroups = new WeakMap();
+    this.groupVisibilityObservers = new WeakMap();
     this.displayControls = new WeakMap();
     this.displayGroups = new WeakMap();
     this.searchMatches = new WeakMap();
@@ -426,7 +421,6 @@ module.exports = class CanvasGraphController {
     const option = CANVAS_NODE_SHAPE_OPTIONS[type];
     const setting = new Setting(childrenEl)
       .setName(CANVAS_NODE_TYPE_LABELS[type] ?? `${this.toTitleCase(type)} nodes`)
-      .setDesc(CANVAS_NODE_TYPE_DESCRIPTIONS[type] ?? "Canvas node shape.")
       .setClass(`${CANVAS_NODE_SHAPE_CLASS_PREFIX}-${type}`)
       .addDropdown((dropdown) => {
         for (const [value, label] of Object.entries(CANVAS_SHAPE_LABELS)) {
@@ -464,6 +458,7 @@ module.exports = class CanvasGraphController {
     }
     this.filterControls.delete(engine);
     this.displayControls.delete(engine);
+    this.disconnectCanvasOptionsVisibilityObserver(engine);
     this.removeCanvasFilterGroup(engine);
 
     delete engine?.filterOptions?.optionListeners?.[CANVAS_LINK_MODE_OPTION];
@@ -582,45 +577,179 @@ module.exports = class CanvasGraphController {
       parentEl.appendChild(groupEl);
     }
 
-    const titleEl = groupEl.querySelector?.(`.${CANVAS_OPTIONS_GROUP_SUMMARY_CLASS} .tree-item-inner`);
-    if (titleEl) {
-      titleEl.textContent = CANVAS_OPTIONS_GROUP_TITLE;
-    }
-    let contentEl = groupEl.querySelector?.(`.${CANVAS_OPTIONS_GROUP_CONTENT_CLASS}`);
-    if (!contentEl) {
-      contentEl = doc.createElement("div");
-      contentEl.classList.add(CANVAS_OPTIONS_GROUP_CONTENT_CLASS, "tree-item-children");
-      groupEl.appendChild(contentEl);
+    const group = this.configureCanvasOptionsGroup(groupEl, doc);
+    this.filterGroups.set(engine, group);
+    this.observeCanvasOptionsVisibility(engine, group);
+    return group;
+  }
+
+  observeCanvasOptionsVisibility(engine, group) {
+    const controlsEl = engine?.controlsEl;
+    if (!controlsEl || !group?.groupEl) {
+      return;
     }
 
-    const group = { groupEl, contentEl };
-    this.filterGroups.set(engine, group);
-    return group;
+    let record = this.groupVisibilityObservers.get(engine);
+    if (!record || record.controlsEl !== controlsEl) {
+      this.disconnectCanvasOptionsVisibilityObserver(engine);
+
+      const ownerWindow = controlsEl.ownerDocument?.defaultView ?? globalThis;
+      const MutationObserverCtor = ownerWindow.MutationObserver ?? globalThis.MutationObserver;
+      const requestFrame = ownerWindow.requestAnimationFrame?.bind(ownerWindow)
+        ?? ((callback) => ownerWindow.setTimeout(callback, 16));
+      const cancelFrame = ownerWindow.cancelAnimationFrame?.bind(ownerWindow)
+        ?? ownerWindow.clearTimeout?.bind(ownerWindow);
+
+      record = {
+        controlsEl,
+        group,
+        frameId: null,
+        cancelFrame,
+        observer: null,
+        schedule: () => {
+          if (record.frameId !== null) {
+            return;
+          }
+          record.frameId = requestFrame(() => {
+            record.frameId = null;
+            this.syncCanvasOptionsBankVisibility(engine, record.group);
+          });
+        }
+      };
+
+      if (MutationObserverCtor) {
+        record.observer = new MutationObserverCtor(record.schedule);
+        const observerOptions = {
+          attributes: true,
+          attributeFilter: ["aria-expanded", "aria-hidden", "class", "hidden", "style"],
+          childList: true,
+          subtree: true
+        };
+        record.observer.observe(controlsEl, observerOptions);
+        if (controlsEl.parentElement) {
+          record.observer.observe(controlsEl.parentElement, observerOptions);
+        }
+      }
+
+      this.groupVisibilityObservers.set(engine, record);
+    }
+
+    record.group = group;
+    record.schedule();
+  }
+
+  disconnectCanvasOptionsVisibilityObserver(engine) {
+    const record = this.groupVisibilityObservers.get(engine);
+    if (!record) {
+      return;
+    }
+
+    record.observer?.disconnect?.();
+    if (record.frameId !== null) {
+      record.cancelFrame?.(record.frameId);
+    }
+    this.groupVisibilityObservers.delete(engine);
+  }
+
+  syncCanvasOptionsBankVisibility(engine, group) {
+    const controlsEl = engine?.controlsEl;
+    const groupEl = group?.groupEl;
+    if (!controlsEl || !groupEl) {
+      return;
+    }
+
+    const hasVisibleNativeOptions = Array.from(
+      controlsEl.querySelectorAll(".setting-item, .tree-item-self, .search-input-container")
+    ).some((candidateEl) => {
+      if (groupEl.contains(candidateEl)) {
+        return false;
+      }
+      return this.isElementRendered(candidateEl);
+    });
+
+    groupEl.classList.toggle("cluddlegraphs-canvas-options-group-hidden", !hasVisibleNativeOptions);
+  }
+
+  isElementRendered(el) {
+    if (!el?.isConnected || el.hidden || el.getAttribute("aria-hidden") === "true") {
+      return false;
+    }
+
+    const style = el.ownerDocument?.defaultView?.getComputedStyle?.(el);
+    if (style && (style.display === "none" || style.visibility === "hidden")) {
+      return false;
+    }
+
+    return (el.getClientRects?.().length ?? 1) > 0;
   }
 
   createCanvasOptionsGroup(doc) {
     const groupEl = doc.createElement("div");
     groupEl.classList.add(CANVAS_OPTIONS_GROUP_CLASS, CANVAS_FILTER_GROUP_CLASS, "tree-item");
+    return this.configureCanvasOptionsGroup(groupEl, doc);
+  }
 
-    const summaryEl = doc.createElement("div");
+  configureCanvasOptionsGroup(groupEl, doc) {
+    groupEl.classList.add(CANVAS_OPTIONS_GROUP_CLASS, CANVAS_FILTER_GROUP_CLASS, "tree-item");
+
+    let summaryEl = groupEl.querySelector?.(`.${CANVAS_OPTIONS_GROUP_SUMMARY_CLASS}`);
+    if (!summaryEl) {
+      summaryEl = doc.createElement("div");
+      groupEl.insertBefore(summaryEl, groupEl.firstChild);
+    }
     summaryEl.classList.add(CANVAS_OPTIONS_GROUP_SUMMARY_CLASS, "tree-item-self", "is-clickable");
-    const iconEl = doc.createElement("div");
+
+    let iconEl = summaryEl.querySelector?.(".collapse-icon");
+    if (!iconEl) {
+      iconEl = doc.createElement("div");
+      summaryEl.insertBefore(iconEl, summaryEl.firstChild);
+    }
     iconEl.classList.add("tree-item-icon", "collapse-icon");
-    setIcon(iconEl, "right-triangle");
-    const titleEl = doc.createElement("div");
+    setIcon(iconEl, "chevron-right");
+
+    let titleEl = summaryEl.querySelector?.(".tree-item-inner");
+    if (!titleEl) {
+      titleEl = doc.createElement("div");
+      summaryEl.appendChild(titleEl);
+    }
     titleEl.classList.add("tree-item-inner");
     titleEl.textContent = CANVAS_OPTIONS_GROUP_TITLE;
-    summaryEl.appendChild(iconEl);
-    summaryEl.appendChild(titleEl);
-    summaryEl.addEventListener("click", () => {
-      groupEl.classList.toggle("is-collapsed");
-    });
 
-    const contentEl = doc.createElement("div");
+    let contentEl = groupEl.querySelector?.(`.${CANVAS_OPTIONS_GROUP_CONTENT_CLASS}`);
+    if (!contentEl) {
+      contentEl = doc.createElement("div");
+      groupEl.appendChild(contentEl);
+    }
     contentEl.classList.add(CANVAS_OPTIONS_GROUP_CONTENT_CLASS, "tree-item-children");
 
-    groupEl.appendChild(summaryEl);
-    groupEl.appendChild(contentEl);
+    const cleanSummaryEl = summaryEl.cloneNode(true);
+    summaryEl.replaceWith(cleanSummaryEl);
+    summaryEl = cleanSummaryEl;
+    iconEl = summaryEl.querySelector?.(".collapse-icon");
+    if (iconEl) {
+      setIcon(iconEl, "chevron-right");
+    }
+    titleEl = summaryEl.querySelector?.(".tree-item-inner");
+    if (titleEl) {
+      titleEl.textContent = CANVAS_OPTIONS_GROUP_TITLE;
+    }
+
+    const syncCollapsedState = () => {
+      const collapsed = groupEl.classList.contains("is-collapsed");
+      summaryEl.classList.toggle("is-collapsed", collapsed);
+      iconEl?.classList.toggle("is-collapsed", collapsed);
+      contentEl.style.display = collapsed ? "none" : "";
+      summaryEl.setAttribute("aria-expanded", String(!collapsed));
+      contentEl.setAttribute("aria-hidden", String(collapsed));
+    };
+
+    summaryEl.addEventListener("click", (event) => {
+      event.preventDefault();
+      groupEl.classList.toggle("is-collapsed");
+      syncCollapsedState();
+    });
+    syncCollapsedState();
+
     return { groupEl, contentEl };
   }
 
