@@ -992,7 +992,7 @@ const CANVAS_NODE_SHAPE_OPTIONS = {
   link: "cluddlegraphsCanvasLinkNodeShape",
   group: "cluddlegraphsCanvasGroupNodeShape"
 };
-const CANVAS_LINK_MODE_DEFAULT = "all";
+const CANVAS_LINK_MODE_DEFAULT = "hide";
 const CANVAS_LINK_COLOR_DEFAULT = "#7c3aed";
 const CANVAS_NODE_SHAPE_DEFAULTS = {
   file: "circle",
@@ -1677,7 +1677,7 @@ module.exports = class CanvasGraphController {
       summaryEl.insertBefore(iconEl, summaryEl.firstChild);
     }
     iconEl.classList.add("tree-item-icon", "collapse-icon");
-    setIcon(iconEl, "chevron-right");
+    setIcon(iconEl, "right-triangle");
 
     let titleEl = summaryEl.querySelector?.(".tree-item-inner");
     if (!titleEl) {
@@ -1699,7 +1699,7 @@ module.exports = class CanvasGraphController {
     summaryEl = cleanSummaryEl;
     iconEl = summaryEl.querySelector?.(".collapse-icon");
     if (iconEl) {
-      setIcon(iconEl, "chevron-right");
+      setIcon(iconEl, "right-triangle");
     }
     titleEl = summaryEl.querySelector?.(".tree-item-inner");
     if (titleEl) {
@@ -1709,7 +1709,6 @@ module.exports = class CanvasGraphController {
     const syncCollapsedState = () => {
       const collapsed = groupEl.classList.contains("is-collapsed");
       summaryEl.classList.toggle("is-collapsed", collapsed);
-      iconEl?.classList.toggle("is-collapsed", collapsed);
       contentEl.style.display = collapsed ? "none" : "";
       summaryEl.setAttribute("aria-expanded", String(!collapsed));
       contentEl.setAttribute("aria-hidden", String(collapsed));
