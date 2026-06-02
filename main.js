@@ -1064,6 +1064,8 @@ module.exports = class CanvasGraphController {
     this.groupVisibilityObservers = new WeakMap();
     this.displayControls = new WeakMap();
     this.displayGroups = new WeakMap();
+    this.injectedCanvasLinkKeys = new WeakMap();
+    this.decoratedLinkRenderers = new WeakSet();
     this.searchMatches = new WeakMap();
     this.canvasGraphLinks = {};
     this.canvasGraphNodes = {};
@@ -1129,8 +1131,10 @@ module.exports = class CanvasGraphController {
     this.cancelMembershipCloudSync(renderer);
     this.clearMembershipClouds(renderer);
     this.zoneAttractionLinkKeys.delete(engine);
+    this.injectedCanvasLinkKeys.delete(engine);
     if (renderer) {
       this.rendererEngines.delete(renderer);
+      this.decoratedLinkRenderers.delete(renderer);
     }
     this.clearSearchMatches(engine);
     this.removeControls(engine);
@@ -1668,6 +1672,10 @@ module.exports = class CanvasGraphController {
 
   configureCanvasOptionsGroup(groupEl, doc) {
     groupEl.classList.add(CANVAS_OPTIONS_GROUP_CLASS, CANVAS_FILTER_GROUP_CLASS, "tree-item");
+    if (groupEl.dataset.cluddlegraphsCollapseInitialized !== "true") {
+      groupEl.classList.add("is-collapsed");
+      groupEl.dataset.cluddlegraphsCollapseInitialized = "true";
+    }
 
     let summaryEl = groupEl.querySelector?.(`.${CANVAS_OPTIONS_GROUP_SUMMARY_CLASS}`);
     if (!summaryEl) {
@@ -2494,18 +2502,31 @@ module.exports = class CanvasGraphController {
   }
 
   applyCanvasLinksToGraphData(data, engine) {
-    const nativeLinks = this.getGraphLinkKeys(data);
-    const canvasLinks = this.getCanvasGraphLinks(data, engine);
+    const removedInjectedLinks = this.removeInjectedCanvasLinks(data, engine);
     const mode = this.getLinkMode(engine);
     this.zoneAttractionLinkKeys.delete(engine);
 
+    if (mode === "hide") {
+      if (removedInjectedLinks && !engine.options.showOrphans) {
+        this.removeOrphanNodes(data);
+      }
+      if (removedInjectedLinks) {
+        data.numLinks = this.getGraphLinkKeys(data).size;
+      }
+      return {};
+    }
+
+    const nativeLinks = this.getGraphLinkKeys(data);
+    const canvasLinks = this.getCanvasGraphLinks(data, engine);
+    const injectedLinkKeys = new Set();
+
     if (mode !== "hide") {
-      this.addCanvasGraphLinks(data, engine, canvasLinks);
+      for (const linkKey of this.addCanvasGraphLinks(data, engine, canvasLinks, nativeLinks)) {
+        injectedLinkKeys.add(linkKey);
+      }
       this.addCanvasSearchResultNodes(data, engine);
     }
-    if (mode === "hide") {
-      this.removeCanvasGraphLinks(data, canvasLinks, nativeLinks);
-    } else if (mode === "only") {
+    if (mode === "only") {
       this.keepOnlyCanvasGraphLinks(data, canvasLinks);
     }
 
@@ -2513,12 +2534,28 @@ module.exports = class CanvasGraphController {
       this.removeOrphanNodes(data);
     }
 
-    if (this.shouldShowMembershipClouds(engine)) {
-      this.addCanvasZoneAttractionLinks(data, engine);
+    if (this.shouldShowMembershipClouds(engine) && mode !== "hide") {
+      for (const linkKey of this.addCanvasZoneAttractionLinks(data, engine)) {
+        injectedLinkKeys.add(linkKey);
+      }
     }
 
+    if (injectedLinkKeys.size > 0) {
+      this.injectedCanvasLinkKeys.set(engine, injectedLinkKeys);
+    }
     data.numLinks = this.getGraphLinkKeys(data).size;
     return canvasLinks;
+  }
+
+  removeInjectedCanvasLinks(data, engine) {
+    const injectedLinkKeys = this.injectedCanvasLinkKeys.get(engine);
+    if (!injectedLinkKeys?.size) {
+      return false;
+    }
+
+    this.removeGraphLinksByKeys(data, injectedLinkKeys);
+    this.injectedCanvasLinkKeys.delete(engine);
+    return true;
   }
 
   syncRenderer(engine, canvasLinks) {
@@ -2536,20 +2573,29 @@ module.exports = class CanvasGraphController {
       this.plugin.drawCanvasGraphNodeShape(node);
     }
 
-    for (const link of renderer.links ?? []) {
-      const linkKey = this.getLinkKey(link.source?.id, link.target?.id);
-      const canvasLink = canvasLinks[linkKey];
-      if (this.zoneAttractionLinkKeys.get(engine)?.has(linkKey)) {
-        link[CANVAS_ZONE_ATTRACTION_PROPERTY] = true;
-        delete link[CANVAS_LINK_COLOR_PROPERTY];
-      } else if (canvasLink) {
-        delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
-        link[CANVAS_LINK_COLOR_PROPERTY] = this.getRenderedLinkColor(canvasLink, defaultColor, doc);
-      } else {
-        delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
-        delete link[CANVAS_LINK_COLOR_PROPERTY];
+    const zoneAttractionLinkKeys = this.zoneAttractionLinkKeys.get(engine);
+    const hasLinkDecorations = Object.keys(canvasLinks).length > 0 || (zoneAttractionLinkKeys?.size ?? 0) > 0;
+    if (hasLinkDecorations || this.decoratedLinkRenderers.has(renderer)) {
+      for (const link of renderer.links ?? []) {
+        const linkKey = this.getLinkKey(link.source?.id, link.target?.id);
+        const canvasLink = canvasLinks[linkKey];
+        if (zoneAttractionLinkKeys?.has(linkKey)) {
+          link[CANVAS_ZONE_ATTRACTION_PROPERTY] = true;
+          delete link[CANVAS_LINK_COLOR_PROPERTY];
+        } else if (canvasLink) {
+          delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
+          link[CANVAS_LINK_COLOR_PROPERTY] = this.getRenderedLinkColor(canvasLink, defaultColor, doc);
+        } else {
+          delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
+          delete link[CANVAS_LINK_COLOR_PROPERTY];
+        }
+        this.plugin.patchGraphLink(link);
       }
-      this.plugin.patchGraphLink(link);
+      if (hasLinkDecorations) {
+        this.decoratedLinkRenderers.add(renderer);
+      } else {
+        this.decoratedLinkRenderers.delete(renderer);
+      }
     }
 
     this.syncMembershipClouds(engine);
@@ -3086,6 +3132,7 @@ module.exports = class CanvasGraphController {
     if (hiddenLinkKeys.size > 0) {
       this.zoneAttractionLinkKeys.set(engine, hiddenLinkKeys);
     }
+    return hiddenLinkKeys;
   }
 
   getZoneAttractionPairs(memberIds) {
@@ -3186,7 +3233,8 @@ module.exports = class CanvasGraphController {
     }
   }
 
-  addCanvasGraphLinks(data, engine, canvasLinks) {
+  addCanvasGraphLinks(data, engine, canvasLinks, nativeLinks = new Set()) {
+    const injectedLinkKeys = new Set();
     for (const link of Object.values(canvasLinks)) {
       this.ensureGraphNode(data, engine, link.sourcePath);
       this.ensureGraphNode(data, engine, link.targetPath);
@@ -3198,7 +3246,12 @@ module.exports = class CanvasGraphController {
 
       sourceNode.links ??= {};
       sourceNode.links[link.targetPath] = true;
+      const linkKey = this.getLinkKey(link.sourcePath, link.targetPath);
+      if (!nativeLinks.has(linkKey)) {
+        injectedLinkKeys.add(linkKey);
+      }
     }
+    return injectedLinkKeys;
   }
 
   ensureGraphNode(data, engine, path) {
@@ -3221,6 +3274,15 @@ module.exports = class CanvasGraphController {
     for (const link of Object.values(canvasLinks)) {
       if (!nativeLinks.has(this.getLinkKey(link.sourcePath, link.targetPath))) {
         delete data.nodes[link.sourcePath]?.links?.[link.targetPath];
+      }
+    }
+  }
+
+  removeGraphLinksByKeys(data, linkKeys) {
+    for (const linkKey of linkKeys ?? []) {
+      const [sourcePath, targetPath] = this.parseLinkKey(linkKey);
+      if (sourcePath && targetPath) {
+        delete data.nodes?.[sourcePath]?.links?.[targetPath];
       }
     }
   }
@@ -3444,6 +3506,17 @@ module.exports = class CanvasGraphController {
 
   getLinkKey(sourcePath, targetPath) {
     return `${sourcePath}\0${targetPath}`;
+  }
+
+  parseLinkKey(linkKey) {
+    const separatorIndex = String(linkKey).indexOf("\0");
+    if (separatorIndex < 0) {
+      return [null, null];
+    }
+    return [
+      linkKey.slice(0, separatorIndex),
+      linkKey.slice(separatorIndex + 1)
+    ];
   }
 
   hasOpenGraphView() {
