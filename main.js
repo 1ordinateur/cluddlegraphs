@@ -2285,6 +2285,34 @@ module.exports = class CanvasGraphController {
       ?? this.getGraphRendererColor(renderer, "fill");
   }
 
+  getCanvasGraphNodeMetadataColor(engine, metadata, canvasColorCache) {
+    const doc = engine?.renderer?.containerEl?.ownerDocument
+      ?? engine?.renderer?.containerEl?.doc
+      ?? globalThis.document;
+    for (const color of [metadata?.canvasColor, metadata?.inheritedColor]) {
+      const resolvedColor = this.resolveCanvasColorCached(color, doc, canvasColorCache);
+      if (resolvedColor !== null) {
+        return resolvedColor;
+      }
+    }
+    return null;
+  }
+
+  resolveCanvasColorCached(color, doc, canvasColorCache) {
+    if (color === undefined || color === null || color === "") {
+      return null;
+    }
+
+    const key = `${typeof color}:${String(color)}`;
+    if (canvasColorCache?.has(key)) {
+      return canvasColorCache.get(key);
+    }
+
+    const resolvedColor = this.resolveCanvasColor(color, doc);
+    canvasColorCache?.set(key, resolvedColor);
+    return resolvedColor;
+  }
+
   cacheGraphColorQueries(engine, queries) {
     if (!engine || !Array.isArray(queries)) {
       return;
@@ -2728,9 +2756,10 @@ module.exports = class CanvasGraphController {
 
     const defaultColor = this.plugin.hexToRgb(this.getLinkColor(engine));
     const doc = renderer.containerEl?.ownerDocument ?? renderer.containerEl?.doc ?? globalThis.document;
+    const canvasColorCache = new Map();
 
     for (const node of renderer.nodes ?? []) {
-      this.syncNode(engine, node);
+      this.syncNode(engine, node, canvasColorCache);
       this.plugin.patchGraphNode(node);
       this.plugin.drawCanvasGraphNodeShape(node);
     }
@@ -2764,7 +2793,7 @@ module.exports = class CanvasGraphController {
     this.requestRendererVisualRefresh(renderer);
   }
 
-  syncNode(engine, node) {
+  syncNode(engine, node, canvasColorCache = new Map()) {
     const metadata = this.canvasGraphNodes[node?.id];
     if (!metadata || (metadata.type !== "file" && !this.shouldShowCards(engine))) {
       delete node?.[CANVAS_NODE_LABEL_PROPERTY];
@@ -2779,8 +2808,14 @@ module.exports = class CanvasGraphController {
     node[CANVAS_NODE_LABEL_PROPERTY] = metadata.type === "file" ? undefined : metadata.label;
     node[CANVAS_NODE_SHAPE_PROPERTY] = this.getNodeShape(engine, metadata.type);
     if (metadata.type !== "file" && this.shouldInheritCardColors(engine)) {
-      node[CANVAS_NODE_COLOR_SOURCE_PROPERTY] = metadata.canvasPath;
-      delete node[CANVAS_NODE_COLOR_PROPERTY];
+      const color = this.getCanvasGraphNodeMetadataColor(engine, metadata, canvasColorCache);
+      if (color !== null) {
+        node[CANVAS_NODE_COLOR_PROPERTY] = color;
+        delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
+      } else {
+        node[CANVAS_NODE_COLOR_SOURCE_PROPERTY] = metadata.canvasPath;
+        delete node[CANVAS_NODE_COLOR_PROPERTY];
+      }
     } else if (metadata.type !== "file") {
       const color = this.getGraphGroupColorForPath(engine, metadata.canvasPath)
         ?? this.getCanvasNodeInheritedColor(engine?.renderer, metadata.canvasPath);
@@ -2875,10 +2910,16 @@ module.exports = class CanvasGraphController {
       return { links: {}, nodes: {}, memberships: [] };
     }
 
+    const rawNodes = Array.isArray(data.nodes) ? data.nodes : [];
+    const groupMembership = this.getCanvasGroupMembership(data);
+    const parentGroupByNodeId = this.getCanvasParentGroupByNodeId(groupMembership);
+    const inheritedGroupColors = this.getCanvasInheritedGroupColors(rawNodes, parentGroupByNodeId);
     const canvasNode = this.toCanvasFileGraphNode(canvasPath);
     const graphNodes = new Map();
-    for (const node of data.nodes ?? []) {
-      const graphNode = this.toCanvasGraphNode(canvasPath, node);
+    for (const node of rawNodes) {
+      const graphNode = this.toCanvasGraphNode(canvasPath, node, {
+        inheritedColor: this.getCanvasParentGroupColor(node.id, parentGroupByNodeId, inheritedGroupColors)
+      });
       if (graphNode) {
         graphNodes.set(node.id, graphNode);
       }
@@ -2911,7 +2952,6 @@ module.exports = class CanvasGraphController {
       });
     }
 
-    const groupMembership = this.getCanvasGroupMembership(data);
     for (const [groupNodeId, group] of Object.entries(groupMembership.groups)) {
       const sourceNode = graphNodes.get(groupNodeId);
       if (!sourceNode) {
@@ -2967,6 +3007,57 @@ module.exports = class CanvasGraphController {
     }
 
     return this.calculateGroupMembershipMetadata(data, geometryHash);
+  }
+
+  getCanvasParentGroupByNodeId(groupMembership) {
+    const parentGroupByNodeId = {};
+    for (const [groupNodeId, group] of Object.entries(groupMembership?.groups ?? {})) {
+      for (const memberId of group.memberIds ?? []) {
+        parentGroupByNodeId[memberId] = groupNodeId;
+      }
+    }
+    return parentGroupByNodeId;
+  }
+
+  getCanvasInheritedGroupColors(nodes, parentGroupByNodeId) {
+    const nodeById = new Map();
+    for (const node of nodes) {
+      if (node?.id) {
+        nodeById.set(node.id, node);
+      }
+    }
+
+    const groupColors = new Map();
+    const resolving = new Set();
+    const resolveGroupColor = (groupNodeId) => {
+      if (groupColors.has(groupNodeId)) {
+        return groupColors.get(groupNodeId);
+      }
+      if (resolving.has(groupNodeId)) {
+        return null;
+      }
+
+      resolving.add(groupNodeId);
+      const groupNode = nodeById.get(groupNodeId);
+      const parentGroupId = parentGroupByNodeId[groupNodeId];
+      const color = this.getCanvasNodeColor(groupNode)
+        ?? (parentGroupId ? resolveGroupColor(parentGroupId) : null);
+      resolving.delete(groupNodeId);
+      groupColors.set(groupNodeId, color);
+      return color;
+    };
+
+    for (const node of nodes) {
+      if (this.isCanvasGroupNode(node)) {
+        resolveGroupColor(node.id);
+      }
+    }
+    return groupColors;
+  }
+
+  getCanvasParentGroupColor(nodeId, parentGroupByNodeId, inheritedGroupColors) {
+    const parentGroupId = parentGroupByNodeId?.[nodeId];
+    return parentGroupId ? inheritedGroupColors.get(parentGroupId) ?? null : null;
   }
 
   calculateGroupMembershipMetadata(data, geometryHash = this.getGroupMembershipGeometryHash(data)) {
@@ -3125,7 +3216,7 @@ module.exports = class CanvasGraphController {
     };
   }
 
-  toCanvasGraphNode(canvasPath, node) {
+  toCanvasGraphNode(canvasPath, node, options = {}) {
     if (!node?.id || !node.type) {
       return null;
     }
@@ -3141,6 +3232,8 @@ module.exports = class CanvasGraphController {
       return {
         id: resolvedFile.path,
         canvasPath,
+        canvasColor: this.getCanvasNodeColor(node),
+        inheritedColor: options.inheritedColor ?? null,
         label: resolvedFile.basename,
         searchPath: resolvedFile.path,
         searchText: resolvedFile.basename,
@@ -3155,6 +3248,8 @@ module.exports = class CanvasGraphController {
     return {
       id: this.getGraphOnlyNodeId(canvasPath, node.id),
       canvasPath,
+      canvasColor: this.getCanvasNodeColor(node),
+      inheritedColor: options.inheritedColor ?? null,
       label: this.getGraphOnlyNodeLabel(node),
       searchPath: canvasPath,
       searchText: this.getGraphOnlyNodeSearchText(node),
@@ -3165,11 +3260,18 @@ module.exports = class CanvasGraphController {
   toGraphNodeMetadata(node) {
     return {
       canvasPath: node.canvasPath,
+      canvasColor: node.canvasColor ?? null,
+      inheritedColor: node.inheritedColor ?? null,
       label: node.label,
       searchPath: node.searchPath,
       searchText: node.searchText,
       type: node.type
     };
+  }
+
+  getCanvasNodeColor(node) {
+    const color = node?.color;
+    return color === undefined || color === null || color === "" ? null : color;
   }
 
   getGraphOnlyNodeLabel(node) {

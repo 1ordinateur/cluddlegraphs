@@ -14,7 +14,7 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 - `manifest.json`
 - `styles.css`, if the plugin adds one later
 
-For the current `1.5.3` release candidate, run:
+For the current `1.5.4` release candidate, run:
 
 ```bash
 npm run check
@@ -23,10 +23,15 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.5.3
+1.5.4
 ```
 
 Attach `main.js`, `manifest.json`, and `styles.css` to that release.
+
+Patch notes:
+
+- Canvas cards now inherit explicit card colors first, then containing group colors, then the parent Canvas file color.
+- The Cluddlegraph filter row arrow alignment is tightened.
 
 ## Manual QA
 

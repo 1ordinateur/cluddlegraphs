@@ -12,7 +12,6 @@
   align-items: center;
   display: flex;
   flex: 0 0 auto;
-  margin-inline-start: 4px;
   transform-origin: center;
   transition: transform var(--anim-duration-fast, 150ms) ease-in-out;
 }
