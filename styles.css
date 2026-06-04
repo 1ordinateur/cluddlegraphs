@@ -20,6 +20,7 @@
 
 .cluddlegraphs-canvas-options-group-summary .tree-item-inner {
   font-weight: var(--font-semibold, 600);
+  padding-inline-start: 1px;
 }
 
 .cluddlegraphs-canvas-options-group-content.tree-item-children {
