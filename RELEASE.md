@@ -14,7 +14,7 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 - `manifest.json`
 - `styles.css`, if the plugin adds one later
 
-For the current `1.5.0` release candidate, run:
+For the current `1.5.2` release candidate, run:
 
 ```bash
 npm run check
@@ -23,10 +23,10 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.5.0
+1.5.2
 ```
 
-Attach `main.js` and `manifest.json` to that release.
+Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 ## Manual QA
 

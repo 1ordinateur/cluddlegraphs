@@ -1,6 +1,6 @@
 {
   "name": "cluddlegraphs",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Highlight graph search matches without hiding non-matching nodes.",
   "main": "main.js",
   "scripts": {
