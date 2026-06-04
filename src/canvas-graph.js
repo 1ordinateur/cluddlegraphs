@@ -14,6 +14,7 @@ const CANVAS_CARDS_OPTION = "cluddlegraphsCanvasCards";
 const CANVAS_GROUP_MEMBERSHIPS_OPTION = "cluddlegraphsCanvasGroupMemberships";
 const CANVAS_MEMBERSHIP_CLOUDS_OPTION = "cluddlegraphsCanvasMembershipClouds";
 const CANVAS_INHERIT_CARD_COLORS_OPTION = "cluddlegraphsCanvasInheritCardColors";
+const CANVAS_FILE_CONNECTIONS_OPTION = "cluddlegraphsCanvasFileConnections";
 const CANVAS_NODE_SHAPE_OPTIONS = {
   file: "cluddlegraphsCanvasFileNodeShape",
   text: "cluddlegraphsCanvasTextNodeShape",
@@ -45,6 +46,7 @@ const CANVAS_OPTIONS_GROUP_CONTENT_CLASS = "cluddlegraphs-canvas-options-group-c
 const CANVAS_OPTIONS_GROUP_TITLE = "Cluddlegraph";
 const NATIVE_CANVAS_LINKS_CLASS = "cluddlegraphs-native-canvas-links";
 const CANVAS_LINK_MODE_CLASS = "cluddlegraphs-canvas-link-mode";
+const CANVAS_FILE_CONNECTIONS_CLASS = "cluddlegraphs-canvas-file-connections";
 const CANVAS_CARDS_CLASS = "cluddlegraphs-canvas-cards";
 const CANVAS_GROUP_MEMBERSHIPS_CLASS = "cluddlegraphs-canvas-group-memberships";
 const CANVAS_LINK_COLOR_CLASS = "cluddlegraphs-canvas-link-color";
@@ -196,6 +198,10 @@ module.exports = class CanvasGraphController {
       typeof engine.options?.[CANVAS_INHERIT_CARD_COLORS_OPTION] === "boolean"
         ? engine.options[CANVAS_INHERIT_CARD_COLORS_OPTION]
         : savedOptions[CANVAS_INHERIT_CARD_COLORS_OPTION] !== false;
+    engine.options[CANVAS_FILE_CONNECTIONS_OPTION] =
+      typeof engine.options?.[CANVAS_FILE_CONNECTIONS_OPTION] === "boolean"
+        ? engine.options[CANVAS_FILE_CONNECTIONS_OPTION]
+        : savedOptions[CANVAS_FILE_CONNECTIONS_OPTION] !== false;
 
     for (const type of CANVAS_NODE_TYPES) {
       const option = CANVAS_NODE_SHAPE_OPTIONS[type];
@@ -225,14 +231,21 @@ module.exports = class CanvasGraphController {
     this.detachTrackedControls(trackedControls);
     this.removeExistingControls(
       childrenEl,
-      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
+      [CANVAS_LINK_MODE_CLASS, CANVAS_FILE_CONNECTIONS_CLASS, CANVAS_CARDS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
       []
     );
     this.removeExistingControls(
       contentEl,
-      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
+      [CANVAS_LINK_MODE_CLASS, CANVAS_FILE_CONNECTIONS_CLASS, CANVAS_CARDS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
       []
     );
+
+    let fileConnectionsSetting;
+    const syncFileConnectionsVisibility = () => {
+      if (fileConnectionsSetting) {
+        fileConnectionsSetting.settingEl.style.display = this.getLinkMode(engine) === "only" ? "" : "none";
+      }
+    };
 
     const linkModeSetting = new Setting(contentEl)
       .setName("Edge links")
@@ -246,6 +259,7 @@ module.exports = class CanvasGraphController {
           .setValue(this.getLinkMode(engine))
           .onChange((value) => {
             engine.options[CANVAS_LINK_MODE_OPTION] = this.parseLinkMode(value) ?? CANVAS_LINK_MODE_DEFAULT;
+            syncFileConnectionsVisibility();
             engine.render?.();
             engine.onOptionsChange?.();
           });
@@ -255,11 +269,36 @@ module.exports = class CanvasGraphController {
           if (mode) {
             engine.options[CANVAS_LINK_MODE_OPTION] = mode;
             dropdown.setValue(mode);
+            syncFileConnectionsVisibility();
             engine.render?.();
           }
           return this.getLinkMode(engine);
         };
       });
+
+    fileConnectionsSetting = new Setting(contentEl)
+      .setName("Canvas connections")
+      .setClass("mod-toggle")
+      .setClass(CANVAS_FILE_CONNECTIONS_CLASS)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.isCanvasFileConnectionsOptionEnabled(engine))
+          .onChange((enabled) => {
+            engine.options[CANVAS_FILE_CONNECTIONS_OPTION] = enabled;
+            engine.render?.();
+            engine.onOptionsChange?.();
+          });
+
+        filterOptions.optionListeners[CANVAS_FILE_CONNECTIONS_OPTION] = (value) => {
+          if (typeof value === "boolean") {
+            engine.options[CANVAS_FILE_CONNECTIONS_OPTION] = value;
+            toggle.setValue(value);
+            engine.render?.();
+          }
+          return this.isCanvasFileConnectionsOptionEnabled(engine);
+        };
+      });
+    syncFileConnectionsVisibility();
 
     const cardsSetting = new Setting(contentEl)
       .setName("Cards")
@@ -307,7 +346,7 @@ module.exports = class CanvasGraphController {
         };
       });
 
-    this.filterControls.set(engine, [linkModeSetting, cardsSetting, groupMembershipSetting]);
+    this.filterControls.set(engine, [linkModeSetting, fileConnectionsSetting, cardsSetting, groupMembershipSetting]);
   }
 
   addDisplayControls(engine) {
@@ -471,6 +510,7 @@ module.exports = class CanvasGraphController {
     this.removeCanvasFilterGroup(engine);
 
     delete engine?.filterOptions?.optionListeners?.[CANVAS_LINK_MODE_OPTION];
+    delete engine?.filterOptions?.optionListeners?.[CANVAS_FILE_CONNECTIONS_OPTION];
     delete engine?.filterOptions?.optionListeners?.[CANVAS_CARDS_OPTION];
     delete engine?.filterOptions?.optionListeners?.[CANVAS_GROUP_MEMBERSHIPS_OPTION];
     delete engine?.displayOptions?.optionListeners?.[CANVAS_LINK_COLOR_OPTION];
@@ -2108,7 +2148,38 @@ module.exports = class CanvasGraphController {
       }
     }
 
+    if (this.shouldShowCanvasFileConnections(engine)) {
+      this.addCanvasFileConnectionLinks(links, engine);
+    }
+
     return engine.options?.localFile ? this.filterLocalCanvasGraphLinks(engine, links) : links;
+  }
+
+  addCanvasFileConnectionLinks(links, engine) {
+    for (const [canvasPath, memberIds] of Object.entries(this.canvasMemberships)) {
+      const seen = new Set();
+      for (const memberId of memberIds ?? []) {
+        if (seen.has(memberId) || canvasPath === memberId || !this.shouldAllowGraphNode(engine, memberId)) {
+          continue;
+        }
+
+        seen.add(memberId);
+        const key = this.getLinkKey(canvasPath, memberId);
+        const existingLink = links[key] ?? {
+          sourcePath: canvasPath,
+          targetPath: memberId,
+          count: 0,
+          colors: [],
+          edgeCount: 0,
+          groupMembershipCount: 0,
+          canvasFileConnectionCount: 0
+        };
+        existingLink.count = (existingLink.count ?? 0) + 1;
+        existingLink.edgeCount = (existingLink.edgeCount ?? 0) + 1;
+        existingLink.canvasFileConnectionCount = (existingLink.canvasFileConnectionCount ?? 0) + 1;
+        links[key] = existingLink;
+      }
+    }
   }
 
   getVisibleCanvasGraphLinkCount(link, engine) {
@@ -2234,6 +2305,10 @@ module.exports = class CanvasGraphController {
   }
 
   shouldAllowGraphNode(engine, path) {
+    if (this.isCanvasPath(path) && this.shouldShowCanvasFileConnections(engine)) {
+      return typeof this.plugin.app.metadataCache.isUserIgnored !== "function"
+        || !this.plugin.app.metadataCache.isUserIgnored(path);
+    }
     if (this.isGraphOnlyNode(path)) {
       return this.shouldShowCards(engine)
         && (!engine.hasFilter || !this.getCanvasSearchQuery(engine) || !!engine.fileFilter?.[path]);
@@ -2496,6 +2571,14 @@ module.exports = class CanvasGraphController {
     return engine.options?.[CANVAS_GROUP_MEMBERSHIPS_OPTION] !== false;
   }
 
+  shouldShowCanvasFileConnections(engine) {
+    return this.getLinkMode(engine) === "only" && this.isCanvasFileConnectionsOptionEnabled(engine);
+  }
+
+  isCanvasFileConnectionsOptionEnabled(engine) {
+    return engine.options?.[CANVAS_FILE_CONNECTIONS_OPTION] !== false;
+  }
+
   shouldShowMembershipClouds(engine) {
     return engine.options?.[CANVAS_MEMBERSHIP_CLOUDS_OPTION] !== false;
   }
@@ -2530,6 +2613,10 @@ module.exports = class CanvasGraphController {
   isAttachmentPath(path) {
     const extension = String(path).split(".").pop()?.toLowerCase();
     return extension !== "md";
+  }
+
+  isCanvasPath(path) {
+    return String(path).split(".").pop()?.toLowerCase() === "canvas";
   }
 
   getLinkKey(sourcePath, targetPath) {
