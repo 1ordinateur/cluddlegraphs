@@ -1,7 +1,7 @@
 {
   "id": "cluddlegraphs",
   "name": "Cluddle Graphs",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "minAppVersion": "1.12.7",
   "description": "Highlight graph search matches without hiding non-matching nodes.",
   "author": "1ordinateur",
