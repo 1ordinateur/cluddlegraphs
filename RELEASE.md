@@ -14,7 +14,7 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 - `manifest.json`
 - `styles.css`, if the plugin adds one later
 
-For the current `1.5.5` release candidate, run:
+For the current `1.5.6` release candidate, run:
 
 ```bash
 npm run check
@@ -23,15 +23,16 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.5.5
+1.5.6
 ```
 
 Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Patch notes:
 
-- Cluddlegraph menu labels are clarified for Canvas file links, Canvas link color, and URL cards.
-- The Cluddlegraph filter row uses native collapsible styling with a small text alignment nudge.
+- Custom Canvas card shapes now use resolved Canvas node colors instead of a hard-coded white fill.
+- Canvas group card colors now render correctly when group nodes use square or polygon shapes.
+- Canvas zone rendering waits briefly for graph settling and remains opt-in.
 
 ## Manual QA
 

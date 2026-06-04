@@ -780,11 +780,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   }
 
   renderWithCanvasGraphNodeColor(renderer, node, renderNode) {
-    const explicitColor = node?.[CANVAS_NODE_COLOR_PROPERTY];
-    const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
-    const color = typeof explicitColor === "number"
-      ? explicitColor
-      : this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
+    const color = this.getCanvasGraphNodeRenderColor(renderer, node);
     const colors = renderer?.colors;
     if (typeof color !== "number" || !colors?.fill) {
       return renderNode();
@@ -806,6 +802,16 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       }
       colors.fill = previousFill;
     }
+  }
+
+  getCanvasGraphNodeRenderColor(renderer, node) {
+    const explicitColor = node?.[CANVAS_NODE_COLOR_PROPERTY];
+    if (typeof explicitColor === "number") {
+      return explicitColor;
+    }
+
+    const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
+    return this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
   }
 
   renderWithCanvasGraphLinkColor(renderer, link, renderLink) {
@@ -839,7 +845,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
 
     graphics.clear();
-    graphics.beginFill?.(0xffffff, 1);
+    const fillColor = this.getCanvasGraphNodeRenderColor(node.renderer, node);
+    graphics.beginFill?.(typeof fillColor === "number" ? fillColor : 0xffffff, 1);
 
     if (shape === "circle") {
       graphics.drawCircle?.(GRAPH_NODE_CENTER, GRAPH_NODE_CENTER, GRAPH_NODE_RADIUS);
@@ -1040,6 +1047,7 @@ const CANVAS_CLOUD_MARGIN_RATIO = 0.12;
 const CANVAS_CLOUD_CORNER_SEGMENTS = 4;
 const CANVAS_CLOUD_CIRCLE_SEGMENTS = 20;
 const CANVAS_RENDER_FADE_MS = 220;
+const CANVAS_ZONE_SETTLE_MS = 180;
 
 const CANVAS_LINK_MODE_LABELS = {
   all: "All links",
@@ -1064,6 +1072,8 @@ module.exports = class CanvasGraphController {
     this.zoneAttractionLinkKeys = new WeakMap();
     this.cloudLayers = new WeakMap();
     this.cloudSyncFrames = new WeakMap();
+    this.cloudSyncTimers = new WeakMap();
+    this.cloudReadyAt = new WeakMap();
     this.rendererFadeFrames = new WeakMap();
     this.rendererRefreshFrames = new WeakMap();
     this.filterControls = new WeakMap();
@@ -1253,24 +1263,22 @@ module.exports = class CanvasGraphController {
       });
 
     const parentMembershipSetting = new Setting(contentEl)
-      .setName("Canvas file membership")
-      .setDesc("Show links from each Canvas file node to its contained notes and cards.")
+      .setName("Canvas parent links")
+      .setDesc("Show generated links from each parent .canvas node to the Canvas items it contains.")
       .setClass("mod-toggle")
       .setClass(CANVAS_PARENT_MEMBERSHIPS_CLASS)
       .addToggle((toggle) => {
         toggle
           .setValue(this.shouldShowParentMemberships(engine))
           .onChange((enabled) => {
-            engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] = enabled;
-            engine.render?.();
+            this.setParentMembershipsOption(engine, enabled);
             engine.onOptionsChange?.();
           });
 
         filterOptions.optionListeners[CANVAS_PARENT_MEMBERSHIPS_OPTION] = (value) => {
           if (typeof value === "boolean") {
-            engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] = value;
             toggle.setValue(value);
-            engine.render?.();
+            this.setParentMembershipsOption(engine, value);
           }
           return this.shouldShowParentMemberships(engine);
         };
@@ -1514,6 +1522,16 @@ module.exports = class CanvasGraphController {
     }
   }
 
+  setParentMembershipsOption(engine, enabled) {
+    engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] = enabled;
+    this.zoneAttractionLinkKeys.delete(engine);
+    if (this.shouldShowMembershipClouds(engine)) {
+      this.reinitializeMembershipZones(engine);
+      return;
+    }
+    engine.render?.();
+  }
+
   setMembershipCloudsOption(engine, enabled) {
     const wasEnabled = this.shouldShowMembershipClouds(engine);
     engine.options[CANVAS_MEMBERSHIP_CLOUDS_OPTION] = enabled;
@@ -1533,10 +1551,10 @@ module.exports = class CanvasGraphController {
   }
 
   reinitializeMembershipZones(engine) {
-    this.clearMembershipClouds(engine?.renderer);
+    this.markMembershipCloudsSettling(engine?.renderer);
     engine?.render?.();
     this.restartGraphSimulation(engine?.renderer);
-    this.syncMembershipClouds(engine);
+    this.requestMembershipCloudSync(engine?.renderer);
     engine?.renderer?.changed?.();
   }
 
@@ -2073,17 +2091,64 @@ module.exports = class CanvasGraphController {
     this.cloudSyncFrames.set(renderer, frameId);
   }
 
-  cancelMembershipCloudSync(renderer) {
-    const frameId = renderer ? this.cloudSyncFrames.get(renderer) : null;
-    if (!frameId) {
+  markMembershipCloudsSettling(renderer) {
+    if (!renderer) {
+      return;
+    }
+
+    this.cancelMembershipCloudSync(renderer);
+    this.clearMembershipClouds(renderer);
+    this.cloudReadyAt.set(renderer, Date.now() + CANVAS_ZONE_SETTLE_MS);
+    this.scheduleMembershipCloudSync(renderer, CANVAS_ZONE_SETTLE_MS);
+  }
+
+  scheduleMembershipCloudSync(renderer, delay) {
+    if (!renderer || this.cloudSyncTimers.has(renderer)) {
       return;
     }
 
     const ownerWindow = renderer?.containerEl?.ownerDocument?.defaultView ?? globalThis;
-    const cancelFrame = ownerWindow.cancelAnimationFrame?.bind(ownerWindow)
-      ?? ownerWindow.clearTimeout.bind(ownerWindow);
-    cancelFrame(frameId);
-    this.cloudSyncFrames.delete(renderer);
+    const setTimer = ownerWindow.setTimeout?.bind(ownerWindow) ?? setTimeout;
+    const clearTimer = ownerWindow.clearTimeout?.bind(ownerWindow) ?? clearTimeout;
+    const timeoutId = setTimer(() => {
+      this.cloudSyncTimers.delete(renderer);
+      this.requestMembershipCloudSync(renderer);
+    }, Math.max(0, delay));
+    this.cloudSyncTimers.set(renderer, { timeoutId, clearTimer });
+  }
+
+  getMembershipCloudSettleDelay(renderer) {
+    const readyAt = this.cloudReadyAt.get(renderer);
+    if (!readyAt) {
+      return 0;
+    }
+
+    const delay = readyAt - Date.now();
+    if (delay <= 0) {
+      this.cloudReadyAt.delete(renderer);
+      return 0;
+    }
+    return delay;
+  }
+
+  cancelMembershipCloudSync(renderer) {
+    const frameId = renderer ? this.cloudSyncFrames.get(renderer) : null;
+    const ownerWindow = renderer?.containerEl?.ownerDocument?.defaultView ?? globalThis;
+    if (frameId) {
+      const cancelFrame = ownerWindow.cancelAnimationFrame?.bind(ownerWindow)
+        ?? ownerWindow.clearTimeout.bind(ownerWindow);
+      cancelFrame(frameId);
+      this.cloudSyncFrames.delete(renderer);
+    }
+
+    const timer = renderer ? this.cloudSyncTimers.get(renderer) : null;
+    if (timer) {
+      timer.clearTimer?.(timer.timeoutId);
+      this.cloudSyncTimers.delete(renderer);
+    }
+    if (renderer) {
+      this.cloudReadyAt.delete(renderer);
+    }
   }
 
   syncMembershipClouds(engine) {
@@ -2093,6 +2158,13 @@ module.exports = class CanvasGraphController {
     }
     if (!this.shouldShowMembershipClouds(engine)) {
       this.clearMembershipClouds(renderer);
+      return;
+    }
+
+    const settleDelay = this.getMembershipCloudSettleDelay(renderer);
+    if (settleDelay > 0) {
+      this.clearMembershipClouds(renderer);
+      this.scheduleMembershipCloudSync(renderer, settleDelay);
       return;
     }
 
@@ -2927,11 +2999,11 @@ module.exports = class CanvasGraphController {
 
     const links = {};
     const nodes = {};
-    const memberships = [];
+    const memberships = new Set([canvasNode.id]);
     nodes[canvasNode.id] = this.toGraphNodeMetadata(canvasNode);
     for (const graphNode of graphNodes.values()) {
       nodes[graphNode.id] ??= this.toGraphNodeMetadata(graphNode);
-      memberships.push(graphNode.id);
+      memberships.add(graphNode.id);
       this.addCanvasGraphLink(links, canvasNode.id, graphNode.id, {
         kind: "parentMembership"
       });
@@ -2972,7 +3044,7 @@ module.exports = class CanvasGraphController {
       }
     }
 
-    return { links, nodes, memberships };
+    return { links, nodes, memberships: [...memberships] };
   }
 
   addCanvasGraphLink(links, sourceId, targetId, options = {}) {
@@ -3391,23 +3463,53 @@ module.exports = class CanvasGraphController {
   addCanvasZoneAttractionLinks(data, engine) {
     const hiddenLinkKeys = new Set();
     const existingLinks = this.getGraphLinkKeys(data);
+    const showParentLinks = this.shouldShowParentMemberships(engine);
 
-    for (const nodeIds of Object.values(this.canvasMemberships)) {
+    for (const [canvasPath, nodeIds] of Object.entries(this.canvasMemberships)) {
       const memberIds = [];
       const seen = new Set();
+      const candidateIds = [];
       for (const nodeId of nodeIds ?? []) {
-        if (seen.has(nodeId) || !data.nodes?.[nodeId]) {
+        if (seen.has(nodeId)) {
           continue;
         }
         seen.add(nodeId);
-        memberIds.push(nodeId);
+        candidateIds.push(nodeId);
       }
 
-      if (memberIds.length < 2) {
+      if (!candidateIds.some((nodeId) => data.nodes?.[nodeId])) {
         continue;
       }
 
-      for (const [sourceId, targetId] of this.getZoneAttractionPairs(memberIds)) {
+      for (const nodeId of candidateIds) {
+        if (nodeId === canvasPath && !showParentLinks && !data.nodes?.[nodeId]) {
+          continue;
+        }
+        if (!data.nodes?.[nodeId]) {
+          this.ensureGraphNode(data, engine, nodeId);
+        }
+        if (!data.nodes?.[nodeId]) {
+          continue;
+        }
+        memberIds.push(nodeId);
+      }
+
+      if (showParentLinks && memberIds.length > 0 && canvasPath && !memberIds.includes(canvasPath)) {
+        this.ensureGraphNode(data, engine, canvasPath);
+        if (data.nodes?.[canvasPath]) {
+          memberIds.unshift(canvasPath);
+        }
+      }
+
+      const attractionMemberIds = showParentLinks
+        ? memberIds
+        : memberIds.filter((memberId) => memberId !== canvasPath);
+
+      if (attractionMemberIds.length < 2) {
+        continue;
+      }
+
+      for (const [sourceId, targetId] of this.getZoneAttractionPairs(attractionMemberIds)) {
         if (sourceId === targetId || this.hasAnyDirectionLink(existingLinks, sourceId, targetId)) {
           continue;
         }
@@ -3764,7 +3866,7 @@ module.exports = class CanvasGraphController {
   }
 
   shouldShowMembershipClouds(engine) {
-    return engine.options?.[CANVAS_MEMBERSHIP_CLOUDS_OPTION] !== false;
+    return engine.options?.[CANVAS_MEMBERSHIP_CLOUDS_OPTION] === true;
   }
 
   shouldInheritCardColors(engine) {

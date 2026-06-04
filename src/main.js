@@ -776,11 +776,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   }
 
   renderWithCanvasGraphNodeColor(renderer, node, renderNode) {
-    const explicitColor = node?.[CANVAS_NODE_COLOR_PROPERTY];
-    const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
-    const color = typeof explicitColor === "number"
-      ? explicitColor
-      : this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
+    const color = this.getCanvasGraphNodeRenderColor(renderer, node);
     const colors = renderer?.colors;
     if (typeof color !== "number" || !colors?.fill) {
       return renderNode();
@@ -802,6 +798,16 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       }
       colors.fill = previousFill;
     }
+  }
+
+  getCanvasGraphNodeRenderColor(renderer, node) {
+    const explicitColor = node?.[CANVAS_NODE_COLOR_PROPERTY];
+    if (typeof explicitColor === "number") {
+      return explicitColor;
+    }
+
+    const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
+    return this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
   }
 
   renderWithCanvasGraphLinkColor(renderer, link, renderLink) {
@@ -835,7 +841,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
 
     graphics.clear();
-    graphics.beginFill?.(0xffffff, 1);
+    const fillColor = this.getCanvasGraphNodeRenderColor(node.renderer, node);
+    graphics.beginFill?.(typeof fillColor === "number" ? fillColor : 0xffffff, 1);
 
     if (shape === "circle") {
       graphics.drawCircle?.(GRAPH_NODE_CENTER, GRAPH_NODE_CENTER, GRAPH_NODE_RADIUS);
