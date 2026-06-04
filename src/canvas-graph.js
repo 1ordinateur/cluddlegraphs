@@ -34,7 +34,7 @@ const CANVAS_SHAPES = ["circle", "triangle", "square", "pentagon", "hexagon"];
 const CANVAS_NODE_TYPE_LABELS = {
   file: "File nodes",
   text: "Text cards",
-  link: "Link cards",
+  link: "URL cards",
   group: "Group cards"
 };
 const CANVAS_GRAPH_ONLY_NODE_PREFIX = "cluddlegraphs-canvas-node";
@@ -392,7 +392,7 @@ module.exports = class CanvasGraphController {
     );
 
     const colorSetting = new Setting(contentEl)
-      .setName("Link color")
+      .setName("Canvas link color")
       .setClass(CANVAS_LINK_COLOR_CLASS)
       .addColorPicker((colorPicker) => {
         colorPicker
@@ -754,7 +754,7 @@ module.exports = class CanvasGraphController {
       summaryEl = doc.createElement("div");
       groupEl.insertBefore(summaryEl, groupEl.firstChild);
     }
-    summaryEl.classList.add(CANVAS_OPTIONS_GROUP_SUMMARY_CLASS, "tree-item-self", "is-clickable");
+    summaryEl.classList.add(CANVAS_OPTIONS_GROUP_SUMMARY_CLASS, "tree-item-self", "is-clickable", "mod-collapsible");
 
     let iconEl = summaryEl.querySelector?.(".collapse-icon");
     if (!iconEl) {
@@ -853,7 +853,7 @@ module.exports = class CanvasGraphController {
       settingEl.dataset.cluddlegraphsOriginalName = nameEl.textContent ?? "";
     }
     if (nameEl) {
-      nameEl.textContent = "File links";
+      nameEl.textContent = "Show Canvas to File Links";
     }
     settingEl.classList.add(NATIVE_CANVAS_LINKS_CLASS);
   }

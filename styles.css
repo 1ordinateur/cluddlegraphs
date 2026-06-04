@@ -1,13 +1,3 @@
-.cluddlegraphs-canvas-options-group-summary {
-  align-items: center;
-  box-sizing: border-box;
-  display: flex;
-  font-size: var(--font-ui-small, 13px);
-  font-weight: var(--font-semibold, 600);
-  line-height: var(--line-height-tight, 1.3);
-  min-height: 42px;
-}
-
 .cluddlegraphs-canvas-options-group-summary .collapse-icon {
   align-items: center;
   display: flex;
@@ -29,9 +19,7 @@
 }
 
 .cluddlegraphs-canvas-options-group-summary .tree-item-inner {
-  font-size: inherit;
-  font-weight: inherit;
-  line-height: inherit;
+  font-weight: var(--font-semibold, 600);
 }
 
 .cluddlegraphs-canvas-options-group-content.tree-item-children {
