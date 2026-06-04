@@ -983,6 +983,7 @@ const {
 const CANVAS_LINK_MODE_OPTION = "cluddlegraphsCanvasLinkMode";
 const CANVAS_LINK_COLOR_OPTION = "cluddlegraphsCanvasLinkColor";
 const CANVAS_CARDS_OPTION = "cluddlegraphsCanvasCards";
+const CANVAS_PARENT_MEMBERSHIPS_OPTION = "cluddlegraphsCanvasParentMemberships";
 const CANVAS_GROUP_MEMBERSHIPS_OPTION = "cluddlegraphsCanvasGroupMemberships";
 const CANVAS_MEMBERSHIP_CLOUDS_OPTION = "cluddlegraphsCanvasMembershipClouds";
 const CANVAS_INHERIT_CARD_COLORS_OPTION = "cluddlegraphsCanvasInheritCardColors";
@@ -1018,6 +1019,7 @@ const CANVAS_OPTIONS_GROUP_TITLE = "Cluddlegraph";
 const NATIVE_CANVAS_LINKS_CLASS = "cluddlegraphs-native-canvas-links";
 const CANVAS_LINK_MODE_CLASS = "cluddlegraphs-canvas-link-mode";
 const CANVAS_CARDS_CLASS = "cluddlegraphs-canvas-cards";
+const CANVAS_PARENT_MEMBERSHIPS_CLASS = "cluddlegraphs-canvas-parent-memberships";
 const CANVAS_GROUP_MEMBERSHIPS_CLASS = "cluddlegraphs-canvas-group-memberships";
 const CANVAS_LINK_COLOR_CLASS = "cluddlegraphs-canvas-link-color";
 const CANVAS_MEMBERSHIP_CLOUDS_CLASS = "cluddlegraphs-canvas-membership-clouds";
@@ -1064,6 +1066,7 @@ module.exports = class CanvasGraphController {
     this.groupVisibilityObservers = new WeakMap();
     this.displayControls = new WeakMap();
     this.displayGroups = new WeakMap();
+    this.injectedCanvasLinkKeys = new WeakMap();
     this.searchMatches = new WeakMap();
     this.canvasGraphLinks = {};
     this.canvasGraphNodes = {};
@@ -1129,6 +1132,7 @@ module.exports = class CanvasGraphController {
     this.cancelMembershipCloudSync(renderer);
     this.clearMembershipClouds(renderer);
     this.zoneAttractionLinkKeys.delete(engine);
+    this.injectedCanvasLinkKeys.delete(engine);
     if (renderer) {
       this.rendererEngines.delete(renderer);
     }
@@ -1152,6 +1156,10 @@ module.exports = class CanvasGraphController {
       typeof engine.options?.[CANVAS_CARDS_OPTION] === "boolean"
         ? engine.options[CANVAS_CARDS_OPTION]
         : savedOptions[CANVAS_CARDS_OPTION] !== false;
+    engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] =
+      typeof engine.options?.[CANVAS_PARENT_MEMBERSHIPS_OPTION] === "boolean"
+        ? engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION]
+        : savedOptions[CANVAS_PARENT_MEMBERSHIPS_OPTION] !== false;
     engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION] =
       typeof engine.options?.[CANVAS_GROUP_MEMBERSHIPS_OPTION] === "boolean"
         ? engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION]
@@ -1193,12 +1201,12 @@ module.exports = class CanvasGraphController {
     this.detachTrackedControls(trackedControls);
     this.removeExistingControls(
       childrenEl,
-      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
+      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, CANVAS_PARENT_MEMBERSHIPS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
       []
     );
     this.removeExistingControls(
       contentEl,
-      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
+      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, CANVAS_PARENT_MEMBERSHIPS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
       []
     );
 
@@ -1252,6 +1260,30 @@ module.exports = class CanvasGraphController {
         };
       });
 
+    const parentMembershipSetting = new Setting(contentEl)
+      .setName("Canvas file membership")
+      .setDesc("Show links from each Canvas file node to its contained notes and cards.")
+      .setClass("mod-toggle")
+      .setClass(CANVAS_PARENT_MEMBERSHIPS_CLASS)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.shouldShowParentMemberships(engine))
+          .onChange((enabled) => {
+            engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] = enabled;
+            engine.render?.();
+            engine.onOptionsChange?.();
+          });
+
+        filterOptions.optionListeners[CANVAS_PARENT_MEMBERSHIPS_OPTION] = (value) => {
+          if (typeof value === "boolean") {
+            engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] = value;
+            toggle.setValue(value);
+            engine.render?.();
+          }
+          return this.shouldShowParentMemberships(engine);
+        };
+      });
+
     const groupMembershipSetting = new Setting(contentEl)
       .setName("Groups")
       .setClass("mod-toggle")
@@ -1275,7 +1307,7 @@ module.exports = class CanvasGraphController {
         };
       });
 
-    this.filterControls.set(engine, [linkModeSetting, cardsSetting, groupMembershipSetting]);
+    this.filterControls.set(engine, [linkModeSetting, cardsSetting, parentMembershipSetting, groupMembershipSetting]);
   }
 
   addDisplayControls(engine) {
@@ -1440,6 +1472,7 @@ module.exports = class CanvasGraphController {
 
     delete engine?.filterOptions?.optionListeners?.[CANVAS_LINK_MODE_OPTION];
     delete engine?.filterOptions?.optionListeners?.[CANVAS_CARDS_OPTION];
+    delete engine?.filterOptions?.optionListeners?.[CANVAS_PARENT_MEMBERSHIPS_OPTION];
     delete engine?.filterOptions?.optionListeners?.[CANVAS_GROUP_MEMBERSHIPS_OPTION];
     delete engine?.displayOptions?.optionListeners?.[CANVAS_LINK_COLOR_OPTION];
     delete engine?.displayOptions?.optionListeners?.[CANVAS_MEMBERSHIP_CLOUDS_OPTION];
@@ -2112,7 +2145,8 @@ module.exports = class CanvasGraphController {
     const engine = this.rendererEngines.get(renderer);
     return this.getGraphNodeColor(renderer?.nodeLookup?.[canvasPath])
       ?? this.toRgbNumber(engine?.fileFilter?.[canvasPath])
-      ?? this.getGraphGroupColorForPath(engine, canvasPath);
+      ?? this.getGraphGroupColorForPath(engine, canvasPath)
+      ?? this.getGraphRendererColor(renderer, "fill");
   }
 
   cacheGraphColorQueries(engine, queries) {
@@ -2494,18 +2528,29 @@ module.exports = class CanvasGraphController {
   }
 
   applyCanvasLinksToGraphData(data, engine) {
-    const nativeLinks = this.getGraphLinkKeys(data);
-    const canvasLinks = this.getCanvasGraphLinks(data, engine);
+    this.removeInjectedCanvasLinks(data, engine);
     const mode = this.getLinkMode(engine);
     this.zoneAttractionLinkKeys.delete(engine);
 
+    if (mode === "hide") {
+      if (!engine.options.showOrphans) {
+        this.removeOrphanNodes(data);
+      }
+      data.numLinks = this.getGraphLinkKeys(data).size;
+      return {};
+    }
+
+    const nativeLinks = this.getGraphLinkKeys(data);
+    const canvasLinks = this.getCanvasGraphLinks(data, engine);
+    const injectedLinkKeys = new Set();
+
     if (mode !== "hide") {
-      this.addCanvasGraphLinks(data, engine, canvasLinks);
+      for (const linkKey of this.addCanvasGraphLinks(data, engine, canvasLinks, nativeLinks)) {
+        injectedLinkKeys.add(linkKey);
+      }
       this.addCanvasSearchResultNodes(data, engine);
     }
-    if (mode === "hide") {
-      this.removeCanvasGraphLinks(data, canvasLinks, nativeLinks);
-    } else if (mode === "only") {
+    if (mode === "only") {
       this.keepOnlyCanvasGraphLinks(data, canvasLinks);
     }
 
@@ -2513,12 +2558,27 @@ module.exports = class CanvasGraphController {
       this.removeOrphanNodes(data);
     }
 
-    if (this.shouldShowMembershipClouds(engine)) {
-      this.addCanvasZoneAttractionLinks(data, engine);
+    if (this.shouldShowMembershipClouds(engine) && mode !== "hide") {
+      for (const linkKey of this.addCanvasZoneAttractionLinks(data, engine)) {
+        injectedLinkKeys.add(linkKey);
+      }
     }
 
+    if (injectedLinkKeys.size > 0) {
+      this.injectedCanvasLinkKeys.set(engine, injectedLinkKeys);
+    }
     data.numLinks = this.getGraphLinkKeys(data).size;
     return canvasLinks;
+  }
+
+  removeInjectedCanvasLinks(data, engine) {
+    const injectedLinkKeys = this.injectedCanvasLinkKeys.get(engine);
+    if (!injectedLinkKeys?.size) {
+      return;
+    }
+
+    this.removeGraphLinksByKeys(data, injectedLinkKeys);
+    this.injectedCanvasLinkKeys.delete(engine);
   }
 
   syncRenderer(engine, canvasLinks) {
@@ -2574,7 +2634,8 @@ module.exports = class CanvasGraphController {
       node[CANVAS_NODE_COLOR_SOURCE_PROPERTY] = metadata.canvasPath;
       delete node[CANVAS_NODE_COLOR_PROPERTY];
     } else if (metadata.type !== "file") {
-      const color = this.getGraphGroupColorForPath(engine, metadata.canvasPath);
+      const color = this.getGraphGroupColorForPath(engine, metadata.canvasPath)
+        ?? this.getCanvasNodeInheritedColor(engine?.renderer, metadata.canvasPath);
       delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
       if (color !== null) {
         node[CANVAS_NODE_COLOR_PROPERTY] = color;
@@ -2666,6 +2727,7 @@ module.exports = class CanvasGraphController {
       return { links: {}, nodes: {}, memberships: [] };
     }
 
+    const canvasNode = this.toCanvasFileGraphNode(canvasPath);
     const graphNodes = new Map();
     for (const node of data.nodes ?? []) {
       const graphNode = this.toCanvasGraphNode(canvasPath, node);
@@ -2677,9 +2739,13 @@ module.exports = class CanvasGraphController {
     const links = {};
     const nodes = {};
     const memberships = [];
+    nodes[canvasNode.id] = this.toGraphNodeMetadata(canvasNode);
     for (const graphNode of graphNodes.values()) {
       nodes[graphNode.id] ??= this.toGraphNodeMetadata(graphNode);
       memberships.push(graphNode.id);
+      this.addCanvasGraphLink(links, canvasNode.id, graphNode.id, {
+        kind: "parentMembership"
+      });
     }
 
     for (const edge of data.edges ?? []) {
@@ -2727,11 +2793,14 @@ module.exports = class CanvasGraphController {
       count: 0,
       colors: [],
       edgeCount: 0,
+      parentMembershipCount: 0,
       groupMembershipCount: 0
     };
 
     resolvedLink.count++;
-    if (options.kind === "groupMembership") {
+    if (options.kind === "parentMembership") {
+      resolvedLink.parentMembershipCount++;
+    } else if (options.kind === "groupMembership") {
       resolvedLink.groupMembershipCount++;
     } else {
       resolvedLink.edgeCount++;
@@ -2895,6 +2964,19 @@ module.exports = class CanvasGraphController {
     return (hash >>> 0).toString(36);
   }
 
+  toCanvasFileGraphNode(canvasPath) {
+    const file = this.plugin.app.vault.getAbstractFileByPath(canvasPath);
+    const basename = file instanceof TFile ? file.basename : canvasPath.replace(/\.canvas$/i, "");
+    return {
+      id: canvasPath,
+      canvasPath,
+      label: basename,
+      searchPath: canvasPath,
+      searchText: basename,
+      type: "file"
+    };
+  }
+
   toCanvasGraphNode(canvasPath, node) {
     if (!node?.id || !node.type) {
       return null;
@@ -3016,10 +3098,14 @@ module.exports = class CanvasGraphController {
             count: 0,
             colors: [],
             edgeCount: 0,
+            parentMembershipCount: 0,
             groupMembershipCount: 0
           };
           existingLink.count += visibleCount;
           existingLink.edgeCount += this.getCanvasGraphEdgeCount(link);
+          if (this.shouldShowParentMemberships(engine)) {
+            existingLink.parentMembershipCount += link.parentMembershipCount ?? 0;
+          }
           if (this.shouldShowGroupMemberships(engine)) {
             existingLink.groupMembershipCount += link.groupMembershipCount ?? 0;
           }
@@ -3039,8 +3125,9 @@ module.exports = class CanvasGraphController {
 
   getVisibleCanvasGraphLinkCount(link, engine) {
     const edgeCount = this.getCanvasGraphEdgeCount(link);
+    const parentMembershipCount = this.shouldShowParentMemberships(engine) ? link.parentMembershipCount ?? 0 : 0;
     const groupMembershipCount = this.shouldShowGroupMemberships(engine) ? link.groupMembershipCount ?? 0 : 0;
-    return edgeCount + groupMembershipCount;
+    return edgeCount + parentMembershipCount + groupMembershipCount;
   }
 
   getCanvasGraphEdgeCount(link) {
@@ -3086,6 +3173,7 @@ module.exports = class CanvasGraphController {
     if (hiddenLinkKeys.size > 0) {
       this.zoneAttractionLinkKeys.set(engine, hiddenLinkKeys);
     }
+    return hiddenLinkKeys;
   }
 
   getZoneAttractionPairs(memberIds) {
@@ -3163,7 +3251,7 @@ module.exports = class CanvasGraphController {
       return this.shouldShowCards(engine)
         && (!engine.hasFilter || !this.getCanvasSearchQuery(engine) || !!engine.fileFilter?.[path]);
     }
-    if (!engine.options?.showAttachments && this.isAttachmentPath(path)) {
+    if (!engine.options?.showAttachments && this.isAttachmentPath(path) && !this.isCanvasFileNode(path)) {
       return false;
     }
     if (typeof this.plugin.app.metadataCache.isUserIgnored === "function"
@@ -3186,7 +3274,8 @@ module.exports = class CanvasGraphController {
     }
   }
 
-  addCanvasGraphLinks(data, engine, canvasLinks) {
+  addCanvasGraphLinks(data, engine, canvasLinks, nativeLinks = new Set()) {
+    const injectedLinkKeys = new Set();
     for (const link of Object.values(canvasLinks)) {
       this.ensureGraphNode(data, engine, link.sourcePath);
       this.ensureGraphNode(data, engine, link.targetPath);
@@ -3198,7 +3287,12 @@ module.exports = class CanvasGraphController {
 
       sourceNode.links ??= {};
       sourceNode.links[link.targetPath] = true;
+      const linkKey = this.getLinkKey(link.sourcePath, link.targetPath);
+      if (!nativeLinks.has(linkKey)) {
+        injectedLinkKeys.add(linkKey);
+      }
     }
+    return injectedLinkKeys;
   }
 
   ensureGraphNode(data, engine, path) {
@@ -3221,6 +3315,15 @@ module.exports = class CanvasGraphController {
     for (const link of Object.values(canvasLinks)) {
       if (!nativeLinks.has(this.getLinkKey(link.sourcePath, link.targetPath))) {
         delete data.nodes[link.sourcePath]?.links?.[link.targetPath];
+      }
+    }
+  }
+
+  removeGraphLinksByKeys(data, linkKeys) {
+    for (const linkKey of linkKeys ?? []) {
+      const [sourcePath, targetPath] = this.parseLinkKey(linkKey);
+      if (sourcePath && targetPath) {
+        delete data.nodes?.[sourcePath]?.links?.[targetPath];
       }
     }
   }
@@ -3402,6 +3505,10 @@ module.exports = class CanvasGraphController {
     return engine.options?.[CANVAS_CARDS_OPTION] !== false;
   }
 
+  shouldShowParentMemberships(engine) {
+    return engine.options?.[CANVAS_PARENT_MEMBERSHIPS_OPTION] !== false;
+  }
+
   shouldShowGroupMemberships(engine) {
     return engine.options?.[CANVAS_GROUP_MEMBERSHIPS_OPTION] !== false;
   }
@@ -3437,6 +3544,10 @@ module.exports = class CanvasGraphController {
     return this.canvasGraphNodes[path]?.type !== undefined && this.canvasGraphNodes[path].type !== "file";
   }
 
+  isCanvasFileNode(path) {
+    return this.canvasGraphNodes[path]?.type === "file" && String(path).toLowerCase().endsWith(".canvas");
+  }
+
   isAttachmentPath(path) {
     const extension = String(path).split(".").pop()?.toLowerCase();
     return extension !== "md";
@@ -3444,6 +3555,17 @@ module.exports = class CanvasGraphController {
 
   getLinkKey(sourcePath, targetPath) {
     return `${sourcePath}\0${targetPath}`;
+  }
+
+  parseLinkKey(linkKey) {
+    const separatorIndex = String(linkKey).indexOf("\0");
+    if (separatorIndex < 0) {
+      return [null, null];
+    }
+    return [
+      linkKey.slice(0, separatorIndex),
+      linkKey.slice(separatorIndex + 1)
+    ];
   }
 
   hasOpenGraphView() {
