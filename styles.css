@@ -75,3 +75,16 @@
 .cluddlegraphs-canvas-options-group-hidden {
   display: none;
 }
+
+.cluddlegraphs-canvas-render-loading canvas,
+.cluddlegraphs-canvas-render-ready canvas {
+  transition: opacity 220ms ease-out;
+}
+
+.cluddlegraphs-canvas-render-loading canvas {
+  opacity: 0.18;
+}
+
+.cluddlegraphs-canvas-render-ready canvas {
+  opacity: 1;
+}

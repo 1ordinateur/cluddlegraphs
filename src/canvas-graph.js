@@ -53,6 +53,8 @@ const CANVAS_LINK_COLOR_CLASS = "cluddlegraphs-canvas-link-color";
 const CANVAS_MEMBERSHIP_CLOUDS_CLASS = "cluddlegraphs-canvas-membership-clouds";
 const CANVAS_INHERIT_CARD_COLORS_CLASS = "cluddlegraphs-canvas-inherit-card-colors";
 const CANVAS_NODE_SHAPE_CLASS_PREFIX = "cluddlegraphs-canvas-node-shape";
+const CANVAS_RENDER_LOADING_CLASS = "cluddlegraphs-canvas-render-loading";
+const CANVAS_RENDER_READY_CLASS = "cluddlegraphs-canvas-render-ready";
 const GROUP_MEMBERSHIP_METADATA_VERSION = 1;
 const UNRESOLVED_CANVAS_COLOR = 0x010203;
 const DEFAULT_LOCAL_CANVAS_DEPTH = 2;
@@ -65,6 +67,7 @@ const CANVAS_CLOUD_MIN_MARGIN = 4;
 const CANVAS_CLOUD_MARGIN_RATIO = 0.12;
 const CANVAS_CLOUD_CORNER_SEGMENTS = 4;
 const CANVAS_CLOUD_CIRCLE_SEGMENTS = 20;
+const CANVAS_RENDER_FADE_MS = 220;
 
 const CANVAS_LINK_MODE_LABELS = {
   all: "All links",
@@ -89,6 +92,8 @@ module.exports = class CanvasGraphController {
     this.zoneAttractionLinkKeys = new WeakMap();
     this.cloudLayers = new WeakMap();
     this.cloudSyncFrames = new WeakMap();
+    this.rendererFadeFrames = new WeakMap();
+    this.rendererRefreshFrames = new WeakMap();
     this.filterControls = new WeakMap();
     this.filterGroups = new WeakMap();
     this.groupVisibilityObservers = new WeakMap();
@@ -143,6 +148,9 @@ module.exports = class CanvasGraphController {
     this.patchRenderer(engine);
 
     if (!this.hydrated || this.needsHydration) {
+      if (!this.hydrated) {
+        this.markRendererHydrating(engine?.renderer);
+      }
       void this.hydrate();
     }
   }
@@ -158,8 +166,11 @@ module.exports = class CanvasGraphController {
       this.rendererPatches.delete(renderer);
     }
 
+    this.cancelRendererVisualRefresh(renderer);
+    this.cancelRendererFade(renderer);
     this.cancelMembershipCloudSync(renderer);
     this.clearMembershipClouds(renderer);
+    this.clearRendererLoadingState(renderer);
     this.zoneAttractionLinkKeys.delete(engine);
     this.injectedCanvasLinkKeys.delete(engine);
     if (renderer) {
@@ -902,9 +913,16 @@ module.exports = class CanvasGraphController {
     const originalChanged = typeof renderer.changed === "function" ? renderer.changed : null;
     const controller = this;
     renderer.setData = function(data) {
+      if (!controller.hydrated) {
+        controller.markRendererHydrating(this);
+        controller.prepareNativeGraphDataWhileHydrating(data, engine);
+        return originalSetData.call(this, data);
+      }
+
       const canvasLinks = controller.applyCanvasLinksToGraphData(data, engine);
       const result = originalSetData.call(this, data);
       controller.syncRenderer(engine, canvasLinks);
+      controller.revealRendererAfterHydration(this);
       return result;
     };
     if (originalChanged) {
@@ -916,6 +934,116 @@ module.exports = class CanvasGraphController {
     }
 
     this.rendererPatches.set(renderer, { setData: originalSetData, changed: originalChanged });
+  }
+
+  prepareNativeGraphDataWhileHydrating(data, engine) {
+    const removedInjectedLinks = this.removeInjectedCanvasLinks(data, engine);
+    this.zoneAttractionLinkKeys.delete(engine);
+
+    if (removedInjectedLinks && !engine.options.showOrphans) {
+      this.removeOrphanNodes(data);
+    }
+    if (removedInjectedLinks) {
+      data.numLinks = this.getGraphLinkKeys(data).size;
+    }
+  }
+
+  markRendererHydrating(renderer) {
+    const containerEl = renderer?.containerEl;
+    if (!containerEl?.classList || this.hydrated) {
+      return;
+    }
+
+    this.cancelRendererFade(renderer);
+    containerEl.classList.add(CANVAS_RENDER_LOADING_CLASS);
+    containerEl.classList.remove(CANVAS_RENDER_READY_CLASS);
+  }
+
+  revealRendererAfterHydration(renderer) {
+    const containerEl = renderer?.containerEl;
+    if (!containerEl?.classList || !containerEl.classList.contains(CANVAS_RENDER_LOADING_CLASS)) {
+      return;
+    }
+
+    this.cancelRendererFade(renderer);
+    const ownerWindow = containerEl.ownerDocument?.defaultView ?? globalThis;
+    const requestFrame = ownerWindow.requestAnimationFrame?.bind(ownerWindow)
+      ?? ((callback) => ownerWindow.setTimeout?.(callback, 16) ?? setTimeout(callback, 16));
+    const cancelFrame = ownerWindow.cancelAnimationFrame?.bind(ownerWindow)
+      ?? ownerWindow.clearTimeout?.bind(ownerWindow)
+      ?? clearTimeout;
+    const clearTimer = ownerWindow.clearTimeout?.bind(ownerWindow) ?? clearTimeout;
+    const setTimer = ownerWindow.setTimeout?.bind(ownerWindow) ?? setTimeout;
+
+    const firstFrame = requestFrame(() => {
+      const secondFrame = requestFrame(() => {
+        containerEl.classList.remove(CANVAS_RENDER_LOADING_CLASS);
+        containerEl.classList.add(CANVAS_RENDER_READY_CLASS);
+        const timeoutId = setTimer(() => {
+          containerEl.classList.remove(CANVAS_RENDER_READY_CLASS);
+          this.rendererFadeFrames.delete(renderer);
+        }, CANVAS_RENDER_FADE_MS);
+        this.rendererFadeFrames.set(renderer, { timeoutId, clearTimer });
+      });
+      this.rendererFadeFrames.set(renderer, { frameId: secondFrame, cancelFrame });
+    });
+
+    this.rendererFadeFrames.set(renderer, { frameId: firstFrame, cancelFrame });
+  }
+
+  cancelRendererFade(renderer) {
+    const frame = this.rendererFadeFrames.get(renderer);
+    if (!frame) {
+      return;
+    }
+
+    if (frame.frameId !== undefined) {
+      frame.cancelFrame?.(frame.frameId);
+    }
+    if (frame.timeoutId !== undefined) {
+      frame.clearTimer?.(frame.timeoutId);
+    }
+    this.rendererFadeFrames.delete(renderer);
+  }
+
+  clearRendererLoadingState(renderer) {
+    const containerEl = renderer?.containerEl;
+    if (!containerEl?.classList) {
+      return;
+    }
+
+    containerEl.classList.remove(CANVAS_RENDER_LOADING_CLASS, CANVAS_RENDER_READY_CLASS);
+  }
+
+  requestRendererVisualRefresh(renderer) {
+    if (!renderer || typeof renderer.changed !== "function" || this.rendererRefreshFrames.has(renderer)) {
+      return;
+    }
+
+    const ownerWindow = renderer.containerEl?.ownerDocument?.defaultView ?? globalThis;
+    const requestFrame = ownerWindow.requestAnimationFrame?.bind(ownerWindow)
+      ?? ((callback) => ownerWindow.setTimeout?.(callback, 16) ?? setTimeout(callback, 16));
+    const cancelFrame = ownerWindow.cancelAnimationFrame?.bind(ownerWindow)
+      ?? ownerWindow.clearTimeout?.bind(ownerWindow)
+      ?? clearTimeout;
+    const frameId = requestFrame(() => {
+      this.rendererRefreshFrames.delete(renderer);
+      renderer.changed?.();
+    });
+    this.rendererRefreshFrames.set(renderer, {
+      frameId,
+      cancelFrame
+    });
+  }
+
+  cancelRendererVisualRefresh(renderer) {
+    const frame = this.rendererRefreshFrames.get(renderer);
+    if (!frame) {
+      return;
+    }
+
+    frame.cancelFrame?.(frame.frameId);
+    this.rendererRefreshFrames.delete(renderer);
   }
 
   syncSearchMatches(engine, matchValue = true) {
@@ -1660,8 +1788,8 @@ module.exports = class CanvasGraphController {
       }
     }
 
-    this.syncMembershipClouds(engine);
-    renderer.changed?.();
+    this.requestMembershipCloudSync(renderer);
+    this.requestRendererVisualRefresh(renderer);
   }
 
   syncNode(engine, node) {
