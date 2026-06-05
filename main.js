@@ -1034,7 +1034,8 @@ const CANVAS_INHERIT_CARD_COLORS_CLASS = "cluddlegraphs-canvas-inherit-card-colo
 const CANVAS_NODE_SHAPE_CLASS_PREFIX = "cluddlegraphs-canvas-node-shape";
 const CANVAS_RENDER_LOADING_CLASS = "cluddlegraphs-canvas-render-loading";
 const CANVAS_RENDER_READY_CLASS = "cluddlegraphs-canvas-render-ready";
-const GROUP_MEMBERSHIP_METADATA_VERSION = 1;
+const GROUP_MEMBERSHIP_METADATA_VERSION = 2;
+const CANVAS_GROUP_TOP_EXTENSION = 20;
 const UNRESOLVED_CANVAS_COLOR = 0x010203;
 const DEFAULT_LOCAL_CANVAS_DEPTH = 2;
 const GRAPH_NODE_CENTER = 100;
@@ -2765,14 +2766,15 @@ module.exports = class CanvasGraphController {
 
   applyCanvasLinksToGraphData(data, engine) {
     const removedInjectedLinks = this.removeInjectedCanvasLinks(data, engine);
+    const removedNativeParentLinks = this.removeNativeCanvasParentLinks(data, engine);
     const mode = this.getLinkMode(engine);
     this.zoneAttractionLinkKeys.delete(engine);
 
     if (mode === "hide") {
-      if (removedInjectedLinks && !engine.options.showOrphans) {
+      if ((removedInjectedLinks || removedNativeParentLinks) && !engine.options.showOrphans) {
         this.removeOrphanNodes(data);
       }
-      if (removedInjectedLinks) {
+      if (removedInjectedLinks || removedNativeParentLinks) {
         data.numLinks = this.getGraphLinkKeys(data).size;
       }
       return {};
@@ -2818,6 +2820,34 @@ module.exports = class CanvasGraphController {
     this.removeGraphLinksByKeys(data, injectedLinkKeys);
     this.injectedCanvasLinkKeys.delete(engine);
     return true;
+  }
+
+  removeNativeCanvasParentLinks(data, engine) {
+    if (this.shouldShowParentMemberships(engine)) {
+      return false;
+    }
+
+    let removed = false;
+    for (const [canvasPath, canvasLinks] of Object.entries(this.canvasGraphLinks)) {
+      const targets = canvasLinks?.[canvasPath];
+      const sourceNode = data.nodes?.[canvasPath];
+      if (!sourceNode?.links) {
+        continue;
+      }
+
+      for (const [targetPath, link] of Object.entries(targets ?? {})) {
+        if ((link.parentMembershipCount ?? 0) <= 0
+          || this.getCanvasGraphEdgeCount(link) > 0
+          || (link.groupMembershipCount ?? 0) > 0
+          || !Object.prototype.hasOwnProperty.call(sourceNode.links, targetPath)) {
+          continue;
+        }
+
+        delete sourceNode.links[targetPath];
+        removed = true;
+      }
+    }
+    return removed;
   }
 
   syncRenderer(engine, canvasLinks) {
@@ -3142,7 +3172,7 @@ module.exports = class CanvasGraphController {
         continue;
       }
 
-      const bbox = this.getCanvasNodeBBox(node);
+      const bbox = this.getCanvasGroupBBox(node);
       if (!bbox) {
         continue;
       }
@@ -3214,6 +3244,11 @@ module.exports = class CanvasGraphController {
 
   isCanvasGroupNode(node) {
     return !!node?.id && node.type === "group";
+  }
+
+  getCanvasGroupBBox(node) {
+    const bbox = this.getCanvasNodeBBox(node);
+    return bbox ? { ...bbox, minY: bbox.minY - CANVAS_GROUP_TOP_EXTENSION } : null;
   }
 
   getCanvasNodeBBox(node) {

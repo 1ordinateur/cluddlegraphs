@@ -40,7 +40,7 @@ Canvas graph links are available from the same graph settings panel:
 - In **Display**, turn **Inherit card colors** on to color Canvas text, link, and group card nodes from their parent Canvas node, or off to use graph group colors.
 - In **Display**, choose shapes for Canvas file, text, link, and group nodes.
 
-Canvas group membership is calculated from strict full containment, matching the Advanced Canvas collapsible-group geometry rule. For nested or overlapping groups, each Canvas item connects to the smallest containing group, so parent groups connect to child groups instead of directly to every descendant.
+Canvas group membership is calculated from strict full containment, with a 20px upward tolerance on Canvas groups so cards near the group title/header are still included. For nested or overlapping groups, each Canvas item connects to the smallest containing group, so parent groups connect to child groups instead of directly to every descendant.
 
 Canvas cards can be found from the graph search by their displayed contents. `path:` searches use the parent `.canvas` file path, so cards follow the same folder/path grouping as the Canvas file that contains them.
 
