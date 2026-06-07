@@ -1079,6 +1079,7 @@ module.exports = class CanvasGraphController {
     this.rendererRefreshFrames = new WeakMap();
     this.filterControls = new WeakMap();
     this.filterGroups = new WeakMap();
+    this.nativeCanvasLinksControlBindings = new WeakMap();
     this.groupVisibilityObservers = new WeakMap();
     this.displayControls = new WeakMap();
     this.displayGroups = new WeakMap();
@@ -1216,7 +1217,7 @@ module.exports = class CanvasGraphController {
     }
 
     const group = this.ensureCanvasOptionsGroup(engine, this.getCanvasOptionsParent(engine, childrenEl));
-    group.nativeControlEl = this.syncNativeCanvasLinksControl(childrenEl, group.contentEl);
+    group.nativeControlEl = this.syncNativeCanvasLinksControl(childrenEl, group.contentEl, engine);
     const contentEl = group.contentEl;
 
     const trackedControls = this.filterControls.get(engine);
@@ -1801,17 +1802,78 @@ module.exports = class CanvasGraphController {
     return { groupEl, contentEl };
   }
 
-  syncNativeCanvasLinksControl(childrenEl, contentEl) {
+  syncNativeCanvasLinksControl(childrenEl, contentEl, engine) {
     const settingEl = this.findNativeCanvasLinksControl(childrenEl);
     if (!settingEl) {
       return null;
     }
 
     this.compactNativeCanvasLinksControl(settingEl);
+    this.bindNativeCanvasLinksControl(settingEl, engine);
+    this.syncParentMembershipsFromNativeControl(settingEl, engine, false);
     if (settingEl.parentElement !== contentEl) {
       contentEl.insertBefore(settingEl, contentEl.firstChild);
     }
     return settingEl;
+  }
+
+  bindNativeCanvasLinksControl(settingEl, engine) {
+    const existing = this.nativeCanvasLinksControlBindings.get(settingEl);
+    if (existing?.engine === engine) {
+      return;
+    }
+    if (existing) {
+      settingEl.removeEventListener("click", existing.listener);
+      settingEl.removeEventListener("change", existing.listener, true);
+    }
+
+    const listener = () => {
+      const ownerWindow = settingEl.ownerDocument?.defaultView ?? globalThis;
+      const setTimer = ownerWindow.setTimeout?.bind(ownerWindow) ?? setTimeout;
+      setTimer(() => {
+        this.syncParentMembershipsFromNativeControl(settingEl, engine, true);
+      }, 0);
+    };
+
+    settingEl.addEventListener("click", listener);
+    settingEl.addEventListener("change", listener, true);
+    this.nativeCanvasLinksControlBindings.set(settingEl, { engine, listener });
+  }
+
+  syncParentMembershipsFromNativeControl(settingEl, engine, shouldRender) {
+    const enabled = this.getNativeCanvasLinksControlValue(settingEl);
+    if (typeof enabled !== "boolean"
+      || engine.options?.[CANVAS_PARENT_MEMBERSHIPS_OPTION] === enabled) {
+      return;
+    }
+
+    if (shouldRender) {
+      this.setParentMembershipsOption(engine, enabled);
+    } else {
+      engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] = enabled;
+    }
+    if (shouldRender) {
+      engine.filterOptions?.optionListeners?.[CANVAS_PARENT_MEMBERSHIPS_OPTION]?.(enabled);
+      engine.onOptionsChange?.();
+    }
+  }
+
+  getNativeCanvasLinksControlValue(settingEl) {
+    const input = settingEl.querySelector?.("input[type='checkbox']");
+    if (input) {
+      return input.checked;
+    }
+
+    const ariaToggle = settingEl.querySelector?.("[aria-checked]");
+    if (ariaToggle) {
+      return ariaToggle.getAttribute("aria-checked") === "true";
+    }
+
+    const checkbox = settingEl.querySelector?.(".checkbox-container");
+    if (checkbox) {
+      return checkbox.classList.contains("is-enabled");
+    }
+    return null;
   }
 
   findNativeCanvasLinksControl(childrenEl) {
@@ -1852,6 +1914,13 @@ module.exports = class CanvasGraphController {
   restoreNativeCanvasLinksControl(settingEl) {
     if (!settingEl) {
       return;
+    }
+
+    const binding = this.nativeCanvasLinksControlBindings.get(settingEl);
+    if (binding) {
+      settingEl.removeEventListener("click", binding.listener);
+      settingEl.removeEventListener("change", binding.listener, true);
+      this.nativeCanvasLinksControlBindings.delete(settingEl);
     }
 
     const nameEl = settingEl.querySelector(".setting-item-name");
