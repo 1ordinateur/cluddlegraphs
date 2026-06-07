@@ -588,7 +588,11 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       const renderer = this.renderer;
       const nativeHighlight = renderer.getHighlightNode?.();
       const searchHighlightNode = nativeHighlight ? null : plugin.getNodeSearchHighlightNode(renderer, this);
-      const renderNode = () => originalRender.apply(this, args);
+      const renderNode = () => {
+        const result = originalRender.apply(this, args);
+        plugin.drawCanvasGraphNodeShape(this);
+        return result;
+      };
 
       try {
         return plugin.renderWithCanvasGraphNodeColor(renderer, this, () => {
