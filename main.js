@@ -793,7 +793,11 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const previousNodeColor = node.color;
     const hadNodeColor = Object.prototype.hasOwnProperty.call(node, "color");
     const previousFill = colors.fill;
-    node.color = { ...previousNodeColor, rgb: color };
+    node.color = {
+      ...previousNodeColor,
+      a: typeof previousNodeColor?.a === "number" ? previousNodeColor.a : 1,
+      rgb: color
+    };
     colors.fill = { ...previousFill, rgb: color };
 
     try {
@@ -1030,7 +1034,7 @@ const CANVAS_OPTIONS_GROUP_TITLE = "Cluddlegraph";
 const NATIVE_CANVAS_LINKS_CLASS = "cluddlegraphs-native-canvas-links";
 const CANVAS_LINK_MODE_CLASS = "cluddlegraphs-canvas-link-mode";
 const CANVAS_CARDS_CLASS = "cluddlegraphs-canvas-cards";
-const CANVAS_PARENT_MEMBERSHIPS_CLASS = "cluddlegraphs-canvas-parent-memberships";
+const LEGACY_CANVAS_PARENT_MEMBERSHIPS_CLASS = "cluddlegraphs-canvas-parent-memberships";
 const CANVAS_GROUP_MEMBERSHIPS_CLASS = "cluddlegraphs-canvas-group-memberships";
 const CANVAS_LINK_COLOR_CLASS = "cluddlegraphs-canvas-link-color";
 const CANVAS_MEMBERSHIP_CLOUDS_CLASS = "cluddlegraphs-canvas-membership-clouds";
@@ -1185,12 +1189,11 @@ module.exports = class CanvasGraphController {
       typeof engine.options?.[CANVAS_CARDS_OPTION] === "boolean"
         ? engine.options[CANVAS_CARDS_OPTION]
         : savedOptions[CANVAS_CARDS_OPTION] !== false;
-    engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] =
-      typeof engine.options?.[CANVAS_PARENT_MEMBERSHIPS_OPTION] === "boolean"
-        ? engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION]
-        : typeof savedOptions[CANVAS_PARENT_MEMBERSHIPS_OPTION] === "boolean"
-          ? savedOptions[CANVAS_PARENT_MEMBERSHIPS_OPTION]
-          : savedOptions.cluddlegraphsCanvasFileConnections !== false;
+    // Obsidian's native Canvas-link toggle is the single source of truth. Start
+    // enabled so old Cluddlegraphs-only false values do not survive now that
+    // their redundant control has been removed; the native control is synced
+    // immediately below when it is available.
+    engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] = true;
     engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION] =
       typeof engine.options?.[CANVAS_GROUP_MEMBERSHIPS_OPTION] === "boolean"
         ? engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION]
@@ -1232,14 +1235,15 @@ module.exports = class CanvasGraphController {
     this.detachTrackedControls(trackedControls);
     this.removeExistingControls(
       childrenEl,
-      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, CANVAS_PARENT_MEMBERSHIPS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
+      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, LEGACY_CANVAS_PARENT_MEMBERSHIPS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
       []
     );
     this.removeExistingControls(
       contentEl,
-      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, CANVAS_PARENT_MEMBERSHIPS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
+      [CANVAS_LINK_MODE_CLASS, CANVAS_CARDS_CLASS, LEGACY_CANVAS_PARENT_MEMBERSHIPS_CLASS, CANVAS_GROUP_MEMBERSHIPS_CLASS],
       []
     );
+    delete filterOptions.optionListeners[CANVAS_PARENT_MEMBERSHIPS_OPTION];
 
     const linkModeSetting = new Setting(contentEl)
       .setName("Edge links")
@@ -1265,28 +1269,6 @@ module.exports = class CanvasGraphController {
             engine.render?.();
           }
           return this.getLinkMode(engine);
-        };
-      });
-
-    const parentMembershipSetting = new Setting(contentEl)
-      .setName("Canvas parent links")
-      .setDesc("Show generated links from each parent .canvas node to the Canvas items it contains.")
-      .setClass("mod-toggle")
-      .setClass(CANVAS_PARENT_MEMBERSHIPS_CLASS)
-      .addToggle((toggle) => {
-        toggle
-          .setValue(this.shouldShowParentMemberships(engine))
-          .onChange((enabled) => {
-            this.setParentMembershipsOption(engine, enabled);
-            engine.onOptionsChange?.();
-          });
-
-        filterOptions.optionListeners[CANVAS_PARENT_MEMBERSHIPS_OPTION] = (value) => {
-          if (typeof value === "boolean") {
-            toggle.setValue(value);
-            this.setParentMembershipsOption(engine, value);
-          }
-          return this.shouldShowParentMemberships(engine);
         };
       });
 
@@ -1336,7 +1318,7 @@ module.exports = class CanvasGraphController {
         };
       });
 
-    this.filterControls.set(engine, [linkModeSetting, cardsSetting, parentMembershipSetting, groupMembershipSetting]);
+    this.filterControls.set(engine, [linkModeSetting, cardsSetting, groupMembershipSetting]);
   }
 
   addDisplayControls(engine) {
@@ -1856,16 +1838,12 @@ module.exports = class CanvasGraphController {
     } else {
       engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] = enabled;
     }
-    if (shouldRender) {
-      engine.filterOptions?.optionListeners?.[CANVAS_PARENT_MEMBERSHIPS_OPTION]?.(enabled);
-      engine.onOptionsChange?.();
-    }
   }
 
   getNativeCanvasLinksControlValue(settingEl) {
-    const input = settingEl.querySelector?.("input[type='checkbox']");
-    if (input) {
-      return input.checked;
+    const checkbox = settingEl.querySelector?.(".checkbox-container");
+    if (checkbox) {
+      return checkbox.classList.contains("is-enabled");
     }
 
     const ariaToggle = settingEl.querySelector?.("[aria-checked]");
@@ -1873,9 +1851,9 @@ module.exports = class CanvasGraphController {
       return ariaToggle.getAttribute("aria-checked") === "true";
     }
 
-    const checkbox = settingEl.querySelector?.(".checkbox-container");
-    if (checkbox) {
-      return checkbox.classList.contains("is-enabled");
+    const input = settingEl.querySelector?.("input[type='checkbox']");
+    if (input) {
+      return input.checked;
     }
     return null;
   }
@@ -1890,6 +1868,7 @@ module.exports = class CanvasGraphController {
       if (settingEl.classList.contains(CANVAS_OPTIONS_GROUP_CLASS)
         || settingEl.classList.contains(CANVAS_LINK_MODE_CLASS)
         || settingEl.classList.contains(CANVAS_CARDS_CLASS)
+        || settingEl.classList.contains(LEGACY_CANVAS_PARENT_MEMBERSHIPS_CLASS)
         || settingEl.classList.contains(CANVAS_GROUP_MEMBERSHIPS_CLASS)) {
         continue;
       }
@@ -1910,7 +1889,7 @@ module.exports = class CanvasGraphController {
       settingEl.dataset.cluddlegraphsOriginalName = nameEl.textContent ?? "";
     }
     if (nameEl) {
-      nameEl.textContent = "Show Canvas to File Links";
+      nameEl.textContent = "Canvas parent links";
     }
     settingEl.classList.add(NATIVE_CANVAS_LINKS_CLASS);
   }
@@ -2510,6 +2489,7 @@ module.exports = class CanvasGraphController {
 
     const savedOptions = this.plugin.getSavedGraphOptions(engine) ?? {};
     const candidates = [
+      engine?.colorGroupOptions?.getColoredQueries?.(),
       engine?.colorGroupOptions?.getColorQueries?.(),
       engine?.colorGroupOptions?.queries,
       engine?.colorGroupOptions?.colorQueries,
@@ -3849,7 +3829,7 @@ module.exports = class CanvasGraphController {
 
     const el = doc.createElement("div");
     el.classList.add(`mod-canvas-color-${color}`);
-    el.style.color = "rgb(var(--canvas-color, 1, 2, 3))";
+    el.style.color = "var(--canvas-color, rgb(1, 2, 3))";
     el.style.display = "none";
     doc.body.appendChild(el);
 

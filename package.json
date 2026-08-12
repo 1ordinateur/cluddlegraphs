@@ -1,11 +1,11 @@
 {
   "name": "cluddlegraphs",
-  "version": "1.5.6",
+  "version": "1.5.7",
   "description": "Highlight graph search matches without hiding non-matching nodes.",
   "main": "main.js",
   "scripts": {
     "build": "node scripts/build.js",
-    "check": "node scripts/build.js --check && node --check main.js"
+    "check": "node scripts/build.js --check && node --check main.js && node --test --test-isolation=none"
   },
   "keywords": [
     "obsidian",

@@ -789,7 +789,11 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const previousNodeColor = node.color;
     const hadNodeColor = Object.prototype.hasOwnProperty.call(node, "color");
     const previousFill = colors.fill;
-    node.color = { ...previousNodeColor, rgb: color };
+    node.color = {
+      ...previousNodeColor,
+      a: typeof previousNodeColor?.a === "number" ? previousNodeColor.a : 1,
+      rgb: color
+    };
     colors.fill = { ...previousFill, rgb: color };
 
     try {

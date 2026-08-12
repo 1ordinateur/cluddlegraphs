@@ -14,7 +14,7 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 - `manifest.json`
 - `styles.css`, if the plugin adds one later
 
-For the current `1.5.6` release candidate, run:
+For the current `1.5.7` release candidate, run:
 
 ```bash
 npm run check
@@ -23,16 +23,17 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.5.6
+1.5.7
 ```
 
 Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Patch notes:
 
-- Custom Canvas card shapes now use resolved Canvas node colors instead of a hard-coded white fill.
-- Canvas group card colors now render correctly when group nodes use square or polygon shapes.
-- Canvas zone rendering waits briefly for graph settling and remains opt-in.
+- Parent Canvas links now default on and use a single, correctly synchronized graph control.
+- Removed the redundant parent-link toggle and migrated obsolete disabled values.
+- Restored Canvas node and group colors with Obsidian 1.13 color APIs and CSS variables.
+- Added regression tests for parent-link defaults, toggle state, and Canvas color compatibility.
 
 ## Manual QA
 
