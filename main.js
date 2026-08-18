@@ -41,6 +41,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.rendererPatches = new WeakMap();
     this.nodePatches = new WeakMap();
     this.linkPatches = new WeakMap();
+    this.localGraphNodeClickPatches = new WeakMap();
     this.filterControls = new WeakMap();
     this.displayControls = new WeakMap();
     this.resetButtonPatches = new WeakMap();
@@ -102,6 +103,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       this.addGraphDisplayColorPicker(engine);
       this.patchGraphResetButton(engine);
       this.patchGraphEngine(engine);
+      this.patchLocalGraphNodeNavigation(engine);
       this.syncRendererSearchHighlights(engine);
     });
   }
@@ -375,6 +377,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
+    this.restoreLocalGraphNodeNavigation(engine);
+
     const patch = this.enginePatches.get(engine);
     if (patch) {
       engine.setQuery = patch.setQuery;
@@ -388,6 +392,76 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.clearRendererSearchHighlights(engine.renderer);
     this.restoreRenderer(engine.renderer);
     engine.render?.();
+  }
+
+  patchLocalGraphNodeNavigation(engine) {
+    if (engine?.view?.getViewType?.() !== LOCAL_GRAPH_VIEW_TYPE
+      || typeof engine.onNodeClick !== "function"
+      || this.localGraphNodeClickPatches.has(engine)) {
+      return;
+    }
+
+    const originalOnNodeClick = engine.onNodeClick;
+    const plugin = this;
+    engine.onNodeClick = function(event, path, nodeType) {
+      if (nodeType !== "tag") {
+        const targetLeaf = plugin.getMainEditorLeaf();
+        if (targetLeaf) {
+          plugin.app.workspace.setActiveLeaf(targetLeaf, { focus: true });
+        }
+      }
+      return originalOnNodeClick.call(this, event, path, nodeType);
+    };
+
+    this.localGraphNodeClickPatches.set(engine, originalOnNodeClick);
+  }
+
+  restoreLocalGraphNodeNavigation(engine) {
+    const originalOnNodeClick = this.localGraphNodeClickPatches.get(engine);
+    if (!originalOnNodeClick) {
+      return;
+    }
+    engine.onNodeClick = originalOnNodeClick;
+    this.localGraphNodeClickPatches.delete(engine);
+  }
+
+  getMainEditorLeaf() {
+    const workspace = this.app.workspace;
+    const rootSplit = workspace.rootSplit;
+    const mostRecentLeaf = workspace.getMostRecentLeaf?.(rootSplit);
+    if (this.isMainEditorTargetLeaf(mostRecentLeaf)) {
+      return mostRecentLeaf;
+    }
+
+    let targetLeaf = null;
+    workspace.iterateRootLeaves?.((leaf) => {
+      if (this.isMainEditorTargetLeaf(leaf)
+        && (!targetLeaf || (leaf.activeTime ?? 0) > (targetLeaf.activeTime ?? 0))) {
+        targetLeaf = leaf;
+      }
+    });
+    if (targetLeaf) {
+      return targetLeaf;
+    }
+
+    if (mostRecentLeaf?.parent && typeof workspace.createLeafInTabGroup === "function") {
+      return workspace.createLeafInTabGroup(mostRecentLeaf.parent);
+    }
+    if (rootSplit && typeof workspace.createLeafInParent === "function") {
+      return workspace.createLeafInParent(rootSplit, rootSplit.children?.length ?? 0);
+    }
+    return null;
+  }
+
+  isMainEditorTargetLeaf(leaf) {
+    if (!leaf || this.app.workspace.isInSidebar?.(leaf)) {
+      return false;
+    }
+    const viewType = leaf.view?.getViewType?.();
+    if (viewType === GRAPH_VIEW_TYPE || viewType === LOCAL_GRAPH_VIEW_TYPE) {
+      return false;
+    }
+    return typeof leaf.canNavigate === "function" ? leaf.canNavigate() : leaf.view?.navigation !== false;
   }
 
   restoreGraphResetButton(engine) {
