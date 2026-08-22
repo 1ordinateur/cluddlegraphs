@@ -1,6 +1,5 @@
 const { Notice, PluginSettingTab, Setting } = require("obsidian");
 
-const DEFAULT_MAPPING_OPTION = "";
 const NATIVE_COLOR_NAMES = {
   "0": "Native grey",
   "1": "Red",
@@ -30,11 +29,11 @@ module.exports = class CluddleGraphsSettingTab extends PluginSettingTab {
 
     const doc = containerEl.ownerDocument;
     const colorIds = this.plugin.canvasEdgeColors.getAvailableColorIds(doc);
-    this.addDefaultConnectionColorSetting(containerEl, colorIds);
+    this.addDefaultConnectionColorSetting(containerEl);
 
     containerEl.createEl("h3", { text: "Per-node colour defaults" });
     for (const sourceColor of ["0", ...colorIds]) {
-      this.addNodeColorMappingSetting(containerEl, sourceColor, colorIds);
+      this.addNodeColorMappingSetting(containerEl, sourceColor);
     }
 
     containerEl.createEl("h2", { text: "Canvas graph metadata" });
@@ -65,26 +64,36 @@ module.exports = class CluddleGraphsSettingTab extends PluginSettingTab {
       });
   }
 
-  addDefaultConnectionColorSetting(containerEl, colorIds) {
+  addDefaultConnectionColorSetting(containerEl) {
     const setting = new Setting(containerEl)
       .setName("Default outgoing connection colour")
       .setDesc("Used when the source node colour has no override. Native grey stores no explicit edge colour and follows the active theme.");
     const doc = containerEl.ownerDocument;
-    this.createColorPalettePicker(
-      setting.controlEl,
-      this.getColorOptions(colorIds, doc),
-      this.plugin.settings.defaultCanvasConnectionColor,
-      async (value) => {
-        await this.plugin.setDefaultCanvasConnectionColor(value);
-        this.display();
-      }
-    );
+    const selectedColor = this.plugin.settings.defaultCanvasConnectionColor;
+    setting
+      .addColorPicker((colorPicker) => {
+        colorPicker
+          .setValue(this.getResolvedColorHex(selectedColor, doc))
+          .onChange(async (value) => {
+            await this.plugin.setDefaultCanvasConnectionColor(value);
+            this.display();
+          });
+      })
+      .addExtraButton((button) => {
+        button
+          .setIcon("rotate-ccw")
+          .setTooltip("Use native grey")
+          .setDisabled(selectedColor === "0")
+          .onClick(async () => {
+            await this.plugin.setDefaultCanvasConnectionColor("0");
+            this.display();
+          });
+      });
   }
 
-  addNodeColorMappingSetting(containerEl, sourceColor, colorIds) {
+  addNodeColorMappingSetting(containerEl, sourceColor) {
     const mappings = this.plugin.settings.canvasConnectionColorByNodeColor;
     const hasOverride = Object.prototype.hasOwnProperty.call(mappings, sourceColor);
-    const selectedColor = hasOverride ? mappings[sourceColor] : DEFAULT_MAPPING_OPTION;
     const doc = containerEl.ownerDocument;
     const setting = new Setting(containerEl)
       .setName(`${this.getColorLabel(sourceColor, doc)} nodes`)
@@ -93,28 +102,26 @@ module.exports = class CluddleGraphsSettingTab extends PluginSettingTab {
 
     this.createColorSwatch(setting.nameEl, sourceColor);
     const defaultColor = this.plugin.settings.defaultCanvasConnectionColor;
-    const options = [
-      {
-        colorId: defaultColor,
-        label: `Use default (${this.getColorLabel(defaultColor, doc)})`,
-        value: DEFAULT_MAPPING_OPTION
-      },
-      ...this.getColorOptions(colorIds, doc)
-    ];
-    this.createColorPalettePicker(setting.controlEl, options, selectedColor, async (value) => {
-      await this.plugin.setCanvasConnectionColorMapping(
-        sourceColor,
-        value === DEFAULT_MAPPING_OPTION ? null : value
-      );
-    });
-  }
-
-  getColorOptions(colorIds, doc) {
-    return ["0", ...colorIds].map((colorId) => ({
-      colorId,
-      label: this.getColorLabel(colorId, doc),
-      value: colorId
-    }));
+    const resolvedTarget = hasOverride ? mappings[sourceColor] : defaultColor;
+    setting
+      .addColorPicker((colorPicker) => {
+        colorPicker
+          .setValue(this.getResolvedColorHex(resolvedTarget, doc))
+          .onChange(async (value) => {
+            await this.plugin.setCanvasConnectionColorMapping(sourceColor, value);
+            this.display();
+          });
+      })
+      .addExtraButton((button) => {
+        button
+          .setIcon("rotate-ccw")
+          .setTooltip(hasOverride ? "Use default outgoing colour" : "Using default outgoing colour")
+          .setDisabled(!hasOverride)
+          .onClick(async () => {
+            await this.plugin.setCanvasConnectionColorMapping(sourceColor, null);
+            this.display();
+          });
+      });
   }
 
   getColorLabel(colorId, doc = this.containerEl?.ownerDocument) {
@@ -136,59 +143,15 @@ module.exports = class CluddleGraphsSettingTab extends PluginSettingTab {
     return label;
   }
 
-  createColorPalettePicker(parentEl, options, selectedValue, onChange) {
-    const picker = parentEl.createEl("details", {
-      cls: "cluddlegraphs-canvas-color-picker"
-    });
-    const summary = picker.createEl("summary", {
-      cls: "cluddlegraphs-canvas-color-picker-trigger"
-    });
-    const menu = picker.createDiv({
-      cls: "cluddlegraphs-canvas-color-picker-menu"
-    });
-
-    const renderSelection = (value) => {
-      const selected = options.find((option) => option.value === value) ?? options[0];
-      summary.empty();
-      this.createColorSwatch(summary, selected.colorId);
-      summary.createSpan({
-        cls: "cluddlegraphs-canvas-color-picker-label",
-        text: selected.label
-      });
-      summary.setAttribute("aria-label", `Choose connection colour. Current: ${selected.label}`);
-
-      for (const button of menu.querySelectorAll("button")) {
-        const isSelected = button.dataset.value === selected.value;
-        button.classList.toggle("is-selected", isSelected);
-        button.setAttribute("aria-pressed", String(isSelected));
-      }
-    };
-
-    for (const option of options) {
-      const button = menu.createEl("button", {
-        attr: {
-          "aria-label": option.label,
-          title: option.label,
-          type: "button"
-        },
-        cls: "cluddlegraphs-canvas-color-picker-option"
-      });
-      button.dataset.value = option.value;
-      this.createColorSwatch(button, option.colorId);
-      if (option.value === DEFAULT_MAPPING_OPTION) {
-        button.classList.add("is-default");
-        button.createSpan({ text: "Use default" });
-      }
-      button.addEventListener("click", async (event) => {
-        event.preventDefault();
-        picker.removeAttribute("open");
-        renderSelection(option.value);
-        await onChange(option.value);
-      });
+  getResolvedColorHex(colorId, doc = this.containerEl?.ownerDocument) {
+    if (/^#[0-9a-f]{6}$/i.test(colorId)) {
+      return colorId.toLowerCase();
     }
 
-    renderSelection(selectedValue);
-    return picker;
+    const cssColor = colorId === "0"
+      ? "var(--text-muted)"
+      : `var(--canvas-color-${colorId})`;
+    return this.plugin.resolveCssColor?.(cssColor, doc) ?? "#808080";
   }
 
   createColorSwatch(parentEl, colorId) {

@@ -21,7 +21,7 @@ Cluddle Graphs adds a highlight mode to Obsidian's graph view search. It is desi
 - **Canvas zones**: Optionally draws compact translucent graph regions around visible nodes that belong to the same Canvas, using the parent Canvas node's current graph color. Zones are off by default.
 - **Canvas visual controls**: Adds built-in graph panel controls for Canvas link visibility, Canvas card visibility, Canvas link color, Canvas card color inheritance, and Canvas item node shapes.
 - **Canvas group metadata refresh**: Adds a settings action that caches group membership metadata inside `.canvas` files for faster future graph hydration.
-- **Canvas connection colour defaults**: Sets the initial colour of newly drawn Canvas connections from a configurable source-node-colour mapping, using visual swatch palettes and resolved custom-colour labels while leaving existing and manually recoloured connections alone.
+- **Canvas connection colour defaults**: Sets the initial colour of newly drawn Canvas connections from a configurable source-node-colour mapping, using the same native colour picker as the graph controls while leaving existing and manually recoloured connections alone.
 
 ## Usage
 

@@ -30,8 +30,8 @@ Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Release notes:
 
-- Replaced connection-colour text dropdowns with visual swatch palette pickers.
-- Resolved custom Canvas palette slots to their actual hex values in the settings UI instead of labels such as `Colour 19`.
+- Replaced connection-colour text dropdowns with Cluddle Graphs' existing native Obsidian colour picker.
+- Resolved saved Canvas palette slots into their actual picker colours instead of showing labels such as `Colour 19`.
 - Preserved existing palette-slot mappings and native-grey inheritance behavior.
 
 ## Manual QA
@@ -52,7 +52,7 @@ Before submission, verify:
 - **Canvas connection colours** lists native and custom Canvas palette slots in the plugin settings.
 - A yellow `7` source node creates a black `19` connection when that override is configured.
 - Unmapped source colours create native-grey connections.
-- Connection-colour controls show selectable colour swatches, and custom slots display their resolved hex values.
+- Connection-colour controls use Obsidian's native colour picker and provide a reset button for inherited/native-grey behaviour.
 - Recolouring a node or an existing connection does not trigger the connection default again.
 - Disabling the plugin restores the original Canvas connection-creation method.
 - Desktop graph and local graph behavior are tested. Mobile support remains disabled until Obsidian mobile graph behavior is explicitly verified.

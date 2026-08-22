@@ -39,3 +39,19 @@ test("keeps native names and explicit hex colours readable", () => {
   assert.equal(settingTab.getColorLabel("3"), "Yellow");
   assert.equal(settingTab.getColorLabel("#a1b2c3"), "#A1B2C3");
 });
+
+test("resolves saved palette slots and native grey for the native picker", () => {
+  const settingTab = Object.create(CluddleGraphsSettingTab.prototype);
+  const values = {
+    "var(--canvas-color-19)": "#000000",
+    "var(--text-muted)": "#7f6f68"
+  };
+  settingTab.plugin = {
+    resolveCssColor: (value) => values[value] ?? null
+  };
+
+  assert.equal(settingTab.getResolvedColorHex("19", {}), "#000000");
+  assert.equal(settingTab.getResolvedColorHex("0", {}), "#7f6f68");
+  assert.equal(settingTab.getResolvedColorHex("#A1B2C3", {}), "#a1b2c3");
+  assert.equal(settingTab.getResolvedColorHex("27", {}), "#808080");
+});
