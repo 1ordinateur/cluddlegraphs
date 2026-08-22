@@ -1,6 +1,6 @@
 {
   "name": "cluddlegraphs",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Enhance graph views and configure Canvas connection colour defaults.",
   "main": "main.js",
   "scripts": {

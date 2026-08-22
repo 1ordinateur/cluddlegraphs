@@ -6,9 +6,6 @@ const originalLoad = Module._load;
 Module._load = function(request, parent, isMain) {
   if (request === "obsidian") {
     return {
-      Keymap: {
-        isModEvent: (event) => !!(event?.ctrlKey || event?.metaKey || event?.shiftKey || event?.altKey)
-      },
       Plugin: class Plugin {},
       PluginSettingTab: class PluginSettingTab {},
       Setting: class Setting {},
@@ -90,14 +87,43 @@ test("leaves tag-node renderer navigation untouched", () => {
   assert.deepEqual(openedFiles, []);
 });
 
-test("preserves native modifier-click behavior", () => {
+for (const modifier of ["ctrlKey", "metaKey"]) {
+  test(`routes ${modifier} file clicks through the main editor leaf`, async () => {
+    const { activeLeaves, openedFiles, plugin, resolvedFile, targetLeaf } = createPlugin();
+    const nativeCalls = [];
+    const engine = createLocalGraphEngine(nativeCalls);
+
+    plugin.patchLocalGraphNodeNavigation(engine);
+    await engine.renderer.onNodeClick({ button: 0, [modifier]: true }, resolvedFile.path, "focused");
+
+    assert.deepEqual(activeLeaves, [{ leaf: targetLeaf, options: { focus: true } }]);
+    assert.deepEqual(openedFiles, [{ file: resolvedFile, options: { active: true } }]);
+    assert.deepEqual(nativeCalls, []);
+  });
+}
+
+for (const modifier of ["shiftKey", "altKey"]) {
+  test(`preserves native ${modifier} click behavior`, () => {
+    const { activeLeaves, openedFiles, plugin, resolvedFile } = createPlugin();
+    const nativeCalls = [];
+    const engine = createLocalGraphEngine(nativeCalls);
+
+    plugin.patchLocalGraphNodeNavigation(engine);
+    engine.renderer.onNodeClick({ button: 0, [modifier]: true }, resolvedFile.path, "focused");
+
+    assert.equal(nativeCalls.length, 1);
+    assert.deepEqual(activeLeaves, []);
+    assert.deepEqual(openedFiles, []);
+  });
+}
+
+test("preserves native non-primary click behavior", () => {
   const { activeLeaves, openedFiles, plugin, resolvedFile } = createPlugin();
   const nativeCalls = [];
   const engine = createLocalGraphEngine(nativeCalls);
-  const event = { button: 0, ctrlKey: true };
 
   plugin.patchLocalGraphNodeNavigation(engine);
-  engine.renderer.onNodeClick(event, resolvedFile.path, "focused");
+  engine.renderer.onNodeClick({ button: 1 }, resolvedFile.path, "focused");
 
   assert.equal(nativeCalls.length, 1);
   assert.deepEqual(activeLeaves, []);

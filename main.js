@@ -2,7 +2,7 @@
 (function() {
   const __modules = {
 "./src/main.js": function(module, exports, require) {
-const { Keymap, Plugin, Setting } = require("obsidian");
+const { Plugin, Setting } = require("obsidian");
 const CanvasGraphController = require("./canvas-graph");
 const {
   CanvasEdgeColorController,
@@ -444,9 +444,10 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const originalOnNodeClick = renderer.onNodeClick;
     const plugin = this;
     const patchedOnNodeClick = function(event, path, nodeType) {
-      const isModifiedClick = Keymap?.isModEvent?.(event)
-        ?? !!(event?.ctrlKey || event?.metaKey || event?.shiftKey || event?.altKey);
-      if (nodeType === "tag" || isModifiedClick) {
+      const usesNativeNavigation = (typeof event?.button === "number" && event.button !== 0)
+        || !!event?.shiftKey
+        || !!event?.altKey;
+      if (nodeType === "tag" || usesNativeNavigation) {
         return originalOnNodeClick.call(this, event, path, nodeType);
       }
 

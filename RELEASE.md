@@ -14,7 +14,7 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 - `manifest.json`
 - `styles.css`, if the plugin adds one later
 
-For the current `1.6.1` release candidate, run:
+For the current `1.6.2` release candidate, run:
 
 ```bash
 npm run check
@@ -23,17 +23,16 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.6.1
+1.6.2
 ```
 
 Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Release notes:
 
-- Fixed local-graph node clicks so ordinary clicks open files directly in the most recently used main editor leaf instead of replacing the local-graph tab.
-- Patched the renderer callback that receives real graph clicks rather than the engine method retained only for compatibility.
-- Preserved native tag-node, modifier-click, and unresolved-path behavior.
-- Added renderer-level regression coverage and clean callback restoration on unload.
+- Extended local-graph routing so Ctrl-click and Cmd-click open file nodes directly in the most recently used main editor leaf without replacing the local-graph tab.
+- Preserved native tag-node, Shift/Alt-click, non-primary-button, and unresolved-path behavior.
+- Added regression coverage for Windows/Linux Ctrl-click and macOS Cmd-click routing.
 
 ## Manual QA
 
@@ -48,7 +47,8 @@ Before submission, verify:
 - Graph reset shows **Are you sure?** and does not reset until confirmed.
 - Disabling the plugin removes added controls and restores graph rendering.
 - An ordinary local-graph file-node click opens in the most recently used main editor pane without replacing the local graph.
-- Modifier-clicks and tag nodes retain Obsidian's native navigation behavior.
+- Ctrl-click and Cmd-click file nodes open in the same main editor pane as ordinary clicks.
+- Shift/Alt-clicks, non-primary clicks, and tag nodes retain Obsidian's native navigation behavior.
 - **Canvas connection colours** lists native and custom Canvas palette slots in the plugin settings.
 - A yellow `7` source node creates a black `19` connection when that override is configured.
 - Unmapped source colours create native-grey connections.
