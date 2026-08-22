@@ -14,7 +14,7 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 - `manifest.json`
 - `styles.css`, if the plugin adds one later
 
-For the current `1.6.2` release candidate, run:
+For the current `1.6.3` release candidate, run:
 
 ```bash
 npm run check
@@ -23,16 +23,16 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.6.2
+1.6.3
 ```
 
 Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Release notes:
 
-- Extended local-graph routing so Ctrl-click and Cmd-click open file nodes directly in the most recently used main editor leaf without replacing the local-graph tab.
-- Preserved native tag-node, Shift/Alt-click, non-primary-button, and unresolved-path behavior.
-- Added regression coverage for Windows/Linux Ctrl-click and macOS Cmd-click routing.
+- Replaced connection-colour text dropdowns with visual swatch palette pickers.
+- Resolved custom Canvas palette slots to their actual hex values in the settings UI instead of labels such as `Colour 19`.
+- Preserved existing palette-slot mappings and native-grey inheritance behavior.
 
 ## Manual QA
 
@@ -52,6 +52,7 @@ Before submission, verify:
 - **Canvas connection colours** lists native and custom Canvas palette slots in the plugin settings.
 - A yellow `7` source node creates a black `19` connection when that override is configured.
 - Unmapped source colours create native-grey connections.
+- Connection-colour controls show selectable colour swatches, and custom slots display their resolved hex values.
 - Recolouring a node or an existing connection does not trigger the connection default again.
 - Disabling the plugin restores the original Canvas connection-creation method.
 - Desktop graph and local graph behavior are tested. Mobile support remains disabled until Obsidian mobile graph behavior is explicitly verified.
