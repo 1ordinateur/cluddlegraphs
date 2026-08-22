@@ -76,3 +76,29 @@
 .cluddlegraphs-canvas-render-ready canvas {
   opacity: 1;
 }
+
+.cluddlegraphs-canvas-color-swatch {
+  background-color: var(--cluddlegraphs-swatch-color, var(--canvas-color));
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 50%;
+  box-sizing: border-box;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 18px;
+  margin-inline: 8px 2px;
+  vertical-align: text-bottom;
+  width: 18px;
+}
+
+.cluddlegraphs-canvas-color-swatch.is-default {
+  background-color: var(--text-muted);
+}
+
+.cluddlegraphs-canvas-connection-color-mapping .setting-item-name {
+  align-items: center;
+  display: flex;
+}
+
+.cluddlegraphs-canvas-connection-color-mapping .setting-item-control {
+  align-items: center;
+}

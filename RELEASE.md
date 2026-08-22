@@ -14,7 +14,7 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 - `manifest.json`
 - `styles.css`, if the plugin adds one later
 
-For the current `1.5.8` release candidate, run:
+For the current `1.6.0` release candidate, run:
 
 ```bash
 npm run check
@@ -23,16 +23,17 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.5.8
+1.6.0
 ```
 
 Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
-Patch notes:
+Release notes:
 
-- Local graph node clicks now open in the most recently used main editor pane instead of replacing the active graph or sidebar pane.
-- Native modifier-click behavior and tag-node searches remain unchanged.
-- Added regression coverage for main-editor routing, graph-leaf exclusion, tag handling, and clean patch restoration.
+- Added configurable source-node-colour mappings for the initial colour of newly created Canvas connections.
+- Unmapped node colours default to the native theme-aware grey connection colour.
+- Existing connections, node recolouring, and manual post-creation edge colours remain untouched.
+- Added native Canvas and Advanced Canvas compatibility, settings swatches, lifecycle cleanup, and regression coverage.
 
 ## Manual QA
 
@@ -46,4 +47,9 @@ Before submission, verify:
 - **Highlighted hit nodes** appears in **Display** and changes the direct-hit color.
 - Graph reset shows **Are you sure?** and does not reset until confirmed.
 - Disabling the plugin removes added controls and restores graph rendering.
+- **Canvas connection colours** lists native and custom Canvas palette slots in the plugin settings.
+- A yellow `7` source node creates a black `19` connection when that override is configured.
+- Unmapped source colours create native-grey connections.
+- Recolouring a node or an existing connection does not trigger the connection default again.
+- Disabling the plugin restores the original Canvas connection-creation method.
 - Desktop graph and local graph behavior are tested. Mobile support remains disabled until Obsidian mobile graph behavior is explicitly verified.

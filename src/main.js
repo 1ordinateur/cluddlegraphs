@@ -1,5 +1,11 @@
 const { Plugin, Setting } = require("obsidian");
 const CanvasGraphController = require("./canvas-graph");
+const {
+  CanvasEdgeColorController,
+  DEFAULT_CANVAS_CONNECTION_COLOR,
+  normalizeCanvasColorId,
+  normalizeCanvasConnectionColorSettings
+} = require("./canvas-edge-colors");
 const CluddleGraphsSettingTab = require("./settings");
 const {
   CANVAS_LINK_COLOR_PROPERTY,
@@ -28,9 +34,11 @@ const GRAPH_NODE_RADIUS = 100;
 const GRAPH_NODE_DIAMETER = GRAPH_NODE_RADIUS * 2;
 
 module.exports = class CluddleGraphsPlugin extends Plugin {
-  onload() {
+  async onload() {
     this.unloaded = false;
+    this.settings = normalizeCanvasConnectionColorSettings(await this.loadData());
     this.canvasGraph = new CanvasGraphController(this);
+    this.canvasEdgeColors = new CanvasEdgeColorController(this);
     this.syncTimeouts = new Set();
     this.pendingLeaves = new WeakSet();
     this.enginePatches = new WeakMap();
@@ -59,6 +67,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 
   onunload() {
     this.unloaded = true;
+    this.canvasEdgeColors?.onunload();
     for (const timeoutId of this.syncTimeouts) {
       window.clearTimeout(timeoutId);
     }
@@ -86,6 +95,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
+    this.canvasEdgeColors.syncCanvasViews();
     this.enforceLocalGraphDepth();
     this.app.workspace.iterateAllLeaves((leaf) => {
       const engine = this.getGraphEngine(leaf?.view);
@@ -388,6 +398,35 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.clearRendererSearchHighlights(engine.renderer);
     this.restoreRenderer(engine.renderer);
     engine.render?.();
+  }
+
+  async setDefaultCanvasConnectionColor(value) {
+    this.settings.defaultCanvasConnectionColor = normalizeCanvasColorId(
+      value,
+      DEFAULT_CANVAS_CONNECTION_COLOR
+    );
+    await this.saveData(this.settings);
+  }
+
+  async setCanvasConnectionColorMapping(sourceColor, connectionColor) {
+    const source = normalizeCanvasColorId(sourceColor, null);
+    if (source === null) {
+      return;
+    }
+
+    const mappings = { ...this.settings.canvasConnectionColorByNodeColor };
+    if (connectionColor === null || connectionColor === undefined || connectionColor === "") {
+      delete mappings[source];
+    } else {
+      const target = normalizeCanvasColorId(connectionColor, null);
+      if (target === null) {
+        return;
+      }
+      mappings[source] = target;
+    }
+
+    this.settings.canvasConnectionColorByNodeColor = mappings;
+    await this.saveData(this.settings);
   }
 
   patchLocalGraphNodeNavigation(engine) {

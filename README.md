@@ -21,6 +21,7 @@ Cluddle Graphs adds a highlight mode to Obsidian's graph view search. It is desi
 - **Canvas zones**: Optionally draws compact translucent graph regions around visible nodes that belong to the same Canvas, using the parent Canvas node's current graph color. Zones are off by default.
 - **Canvas visual controls**: Adds built-in graph panel controls for Canvas link visibility, Canvas card visibility, Canvas link color, Canvas card color inheritance, and Canvas item node shapes.
 - **Canvas group metadata refresh**: Adds a settings action that caches group membership metadata inside `.canvas` files for faster future graph hydration.
+- **Canvas connection colour defaults**: Sets the initial colour of newly drawn Canvas connections from a configurable source-node-colour mapping while leaving existing and manually recoloured connections alone.
 
 ## Usage
 
@@ -48,6 +49,8 @@ Canvas cards can be found from the graph search by their displayed contents. `pa
 
 Use **Settings -> Cluddle Graphs -> Refresh Canvas group metadata** to write cached membership data under `metadata.cluddlegraphs.groupMembership` in each `.canvas` file. The graph also falls back to dynamic calculation when cached metadata is missing or stale.
 
+Canvas connection colour defaults are configured under **Settings -> Cluddle Graphs -> Canvas connection colours**. Choose a native-grey fallback and optionally override it for each available Canvas node colour. A mapping applies only when a new connection is drawn from that source node. Recolouring a node does not update its existing connections, and any connection can still be recoloured manually afterward.
+
 ## Reset confirmation
 
 The graph reset icon now requires a second click on an **Are you sure?** button. Confirming runs the same reset sequence as Obsidian's native reset control:
@@ -61,7 +64,7 @@ If the confirmation is not clicked, it disappears after a short delay and no res
 
 ## Scope
 
-This plugin only changes Obsidian graph and local graph views. It does not change canvas behavior, note files, links, or search results outside the graph panel. Canvas graph links are built by reading `.canvas` files directly and resolving file nodes through Obsidian's metadata cache. The optional settings refresh writes Cluddle Graphs group membership metadata into `.canvas` files and preserves existing Canvas metadata.
+This plugin changes Obsidian graph and local graph views and can set the initial colour of newly created Canvas connections. It does not recolour existing Canvas connections, change note files, or alter links and search results outside the graph panel. Canvas graph links are built by reading `.canvas` files directly and resolving file nodes through Obsidian's metadata cache. The optional settings refresh writes Cluddle Graphs group membership metadata into `.canvas` files and preserves existing Canvas metadata.
 
 ## Privacy
 
@@ -69,7 +72,7 @@ Cluddle Graphs does not collect analytics, make network requests, or send vault 
 
 ## Compatibility notes
 
-Obsidian does not currently expose a public API for changing graph search rendering behavior. To provide hover-like highlighting without hiding non-matching nodes, this plugin uses a small, isolated compatibility layer around Obsidian's graph view objects. The implementation is intentionally scoped to open graph views, guarded with feature checks, and restored when the plugin unloads.
+Obsidian does not currently expose public APIs for changing graph search rendering behavior or intercepting Canvas connection creation. The plugin therefore uses small, isolated compatibility layers around open graph and Canvas view objects. They are guarded with feature checks and restored when the plugin unloads.
 
 Cluddle Graphs is currently marked desktop-only. It does not use Node.js or Electron runtime APIs, but the graph rendering compatibility layer has not been verified against Obsidian mobile graph behavior. Mobile support should only be enabled after explicit mobile testing.
 

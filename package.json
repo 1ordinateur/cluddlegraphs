@@ -1,7 +1,7 @@
 {
   "name": "cluddlegraphs",
-  "version": "1.5.8",
-  "description": "Highlight graph search matches without hiding non-matching nodes.",
+  "version": "1.6.0",
+  "description": "Enhance graph views and configure Canvas connection colour defaults.",
   "main": "main.js",
   "scripts": {
     "build": "node scripts/build.js",
