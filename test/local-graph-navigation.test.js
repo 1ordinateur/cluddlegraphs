@@ -6,6 +6,9 @@ const originalLoad = Module._load;
 Module._load = function(request, parent, isMain) {
   if (request === "obsidian") {
     return {
+      Keymap: {
+        isModEvent: (event) => !!(event?.ctrlKey || event?.metaKey || event?.shiftKey || event?.altKey)
+      },
       Plugin: class Plugin {},
       PluginSettingTab: class PluginSettingTab {},
       Setting: class Setting {},
@@ -19,15 +22,24 @@ const CluddleGraphsPlugin = require("../src/main");
 Module._load = originalLoad;
 
 function createPlugin() {
-  const plugin = Object.create(CluddleGraphsPlugin.prototype);
+  const openedFiles = [];
   const targetLeaf = {
     activeTime: 10,
     canNavigate: () => true,
+    openFile: (file, options) => {
+      openedFiles.push({ file, options });
+      return Promise.resolve();
+    },
     view: { getViewType: () => "markdown" }
   };
   const activeLeaves = [];
+  const resolvedFile = { path: "Pathology/Crohns Disease.md" };
+  const plugin = Object.create(CluddleGraphsPlugin.prototype);
   plugin.localGraphNodeClickPatches = new WeakMap();
   plugin.app = {
+    metadataCache: {
+      getFirstLinkpathDest: (path) => path === resolvedFile.path ? resolvedFile : null
+    },
     workspace: {
       rootSplit: {},
       getMostRecentLeaf: () => targetLeaf,
@@ -35,47 +47,72 @@ function createPlugin() {
       setActiveLeaf: (leaf, options) => activeLeaves.push({ leaf, options })
     }
   };
-  return { plugin, targetLeaf, activeLeaves };
+  return { activeLeaves, openedFiles, plugin, resolvedFile, targetLeaf };
 }
 
-test("routes local graph file clicks through the main editor leaf", () => {
-  const { plugin, targetLeaf, activeLeaves } = createPlugin();
-  const nativeCalls = [];
-  const engine = {
-    view: { getViewType: () => "localgraph" },
-    onNodeClick(event, path, nodeType) {
-      nativeCalls.push({ context: this, event, path, nodeType });
-    }
+function createLocalGraphEngine(nativeCalls) {
+  return {
+    renderer: {
+      onNodeClick(event, path, nodeType) {
+        nativeCalls.push({ context: this, event, path, nodeType });
+      }
+    },
+    view: { getViewType: () => "localgraph" }
   };
+}
+
+test("routes renderer clicks directly through the main editor leaf", async () => {
+  const { activeLeaves, openedFiles, plugin, resolvedFile, targetLeaf } = createPlugin();
+  const nativeCalls = [];
+  const engine = createLocalGraphEngine(nativeCalls);
 
   plugin.patchLocalGraphNodeNavigation(engine);
   const event = { button: 0 };
-  engine.onNodeClick(event, "Pathology/Crohns Disease.md", "focused");
+  await engine.renderer.onNodeClick(event, resolvedFile.path, "focused");
 
   assert.deepEqual(activeLeaves, [{ leaf: targetLeaf, options: { focus: true } }]);
-  assert.deepEqual(nativeCalls, [{
-    context: engine,
-    event,
-    path: "Pathology/Crohns Disease.md",
-    nodeType: "focused"
-  }]);
+  assert.deepEqual(openedFiles, [{ file: resolvedFile, options: { active: true } }]);
+  assert.deepEqual(nativeCalls, []);
 });
 
-test("leaves tag-node navigation untouched", () => {
-  const { plugin, activeLeaves } = createPlugin();
-  let nativeCallCount = 0;
-  const engine = {
-    view: { getViewType: () => "localgraph" },
-    onNodeClick() {
-      nativeCallCount++;
-    }
-  };
+test("leaves tag-node renderer navigation untouched", () => {
+  const { activeLeaves, openedFiles, plugin } = createPlugin();
+  const nativeCalls = [];
+  const engine = createLocalGraphEngine(nativeCalls);
+  const event = { button: 0 };
 
   plugin.patchLocalGraphNodeNavigation(engine);
-  engine.onNodeClick({ button: 0 }, "medicine", "tag");
+  engine.renderer.onNodeClick(event, "medicine", "tag");
 
-  assert.equal(nativeCallCount, 1);
+  assert.equal(nativeCalls.length, 1);
+  assert.equal(nativeCalls[0].context, engine.renderer);
   assert.deepEqual(activeLeaves, []);
+  assert.deepEqual(openedFiles, []);
+});
+
+test("preserves native modifier-click behavior", () => {
+  const { activeLeaves, openedFiles, plugin, resolvedFile } = createPlugin();
+  const nativeCalls = [];
+  const engine = createLocalGraphEngine(nativeCalls);
+  const event = { button: 0, ctrlKey: true };
+
+  plugin.patchLocalGraphNodeNavigation(engine);
+  engine.renderer.onNodeClick(event, resolvedFile.path, "focused");
+
+  assert.equal(nativeCalls.length, 1);
+  assert.deepEqual(activeLeaves, []);
+  assert.deepEqual(openedFiles, []);
+});
+
+test("falls back to native navigation when a graph path cannot be resolved", () => {
+  const { plugin } = createPlugin();
+  const nativeCalls = [];
+  const engine = createLocalGraphEngine(nativeCalls);
+
+  plugin.patchLocalGraphNodeNavigation(engine);
+  engine.renderer.onNodeClick({ button: 0 }, "Missing.md", "focused");
+
+  assert.equal(nativeCalls.length, 1);
 });
 
 test("skips graph leaves when selecting the main editor target", () => {
@@ -99,17 +136,15 @@ test("skips graph leaves when selecting the main editor target", () => {
   assert.equal(plugin.getMainEditorLeaf(), markdownLeaf);
 });
 
-test("restores Obsidian's original local graph click handler", () => {
+test("restores Obsidian's original renderer click handler", () => {
   const { plugin } = createPlugin();
-  const originalOnNodeClick = () => {};
-  const engine = {
-    view: { getViewType: () => "localgraph" },
-    onNodeClick: originalOnNodeClick
-  };
+  const nativeCalls = [];
+  const engine = createLocalGraphEngine(nativeCalls);
+  const originalOnNodeClick = engine.renderer.onNodeClick;
 
   plugin.patchLocalGraphNodeNavigation(engine);
-  assert.notEqual(engine.onNodeClick, originalOnNodeClick);
+  assert.notEqual(engine.renderer.onNodeClick, originalOnNodeClick);
 
   plugin.restoreLocalGraphNodeNavigation(engine);
-  assert.equal(engine.onNodeClick, originalOnNodeClick);
+  assert.equal(engine.renderer.onNodeClick, originalOnNodeClick);
 });

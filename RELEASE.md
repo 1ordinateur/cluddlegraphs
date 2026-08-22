@@ -14,7 +14,7 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 - `manifest.json`
 - `styles.css`, if the plugin adds one later
 
-For the current `1.6.0` release candidate, run:
+For the current `1.6.1` release candidate, run:
 
 ```bash
 npm run check
@@ -23,17 +23,17 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.6.0
+1.6.1
 ```
 
 Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Release notes:
 
-- Added configurable source-node-colour mappings for the initial colour of newly created Canvas connections.
-- Unmapped node colours default to the native theme-aware grey connection colour.
-- Existing connections, node recolouring, and manual post-creation edge colours remain untouched.
-- Added native Canvas and Advanced Canvas compatibility, settings swatches, lifecycle cleanup, and regression coverage.
+- Fixed local-graph node clicks so ordinary clicks open files directly in the most recently used main editor leaf instead of replacing the local-graph tab.
+- Patched the renderer callback that receives real graph clicks rather than the engine method retained only for compatibility.
+- Preserved native tag-node, modifier-click, and unresolved-path behavior.
+- Added renderer-level regression coverage and clean callback restoration on unload.
 
 ## Manual QA
 
@@ -47,6 +47,8 @@ Before submission, verify:
 - **Highlighted hit nodes** appears in **Display** and changes the direct-hit color.
 - Graph reset shows **Are you sure?** and does not reset until confirmed.
 - Disabling the plugin removes added controls and restores graph rendering.
+- An ordinary local-graph file-node click opens in the most recently used main editor pane without replacing the local graph.
+- Modifier-clicks and tag nodes retain Obsidian's native navigation behavior.
 - **Canvas connection colours** lists native and custom Canvas palette slots in the plugin settings.
 - A yellow `7` source node creates a black `19` connection when that override is configured.
 - Unmapped source colours create native-grey connections.

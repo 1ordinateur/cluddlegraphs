@@ -1,7 +1,7 @@
 {
   "id": "cluddlegraphs",
   "name": "Cluddle Graphs",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "minAppVersion": "1.12.7",
   "description": "Enhance graph views and configure Canvas connection colour defaults.",
   "author": "1ordinateur",

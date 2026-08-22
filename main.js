@@ -2,7 +2,7 @@
 (function() {
   const __modules = {
 "./src/main.js": function(module, exports, require) {
-const { Plugin, Setting } = require("obsidian");
+const { Keymap, Plugin, Setting } = require("obsidian");
 const CanvasGraphController = require("./canvas-graph");
 const {
   CanvasEdgeColorController,
@@ -435,32 +435,47 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 
   patchLocalGraphNodeNavigation(engine) {
     if (engine?.view?.getViewType?.() !== LOCAL_GRAPH_VIEW_TYPE
-      || typeof engine.onNodeClick !== "function"
+      || typeof engine.renderer?.onNodeClick !== "function"
       || this.localGraphNodeClickPatches.has(engine)) {
       return;
     }
 
-    const originalOnNodeClick = engine.onNodeClick;
+    const renderer = engine.renderer;
+    const originalOnNodeClick = renderer.onNodeClick;
     const plugin = this;
-    engine.onNodeClick = function(event, path, nodeType) {
-      if (nodeType !== "tag") {
-        const targetLeaf = plugin.getMainEditorLeaf();
-        if (targetLeaf) {
-          plugin.app.workspace.setActiveLeaf(targetLeaf, { focus: true });
-        }
+    const patchedOnNodeClick = function(event, path, nodeType) {
+      const isModifiedClick = Keymap?.isModEvent?.(event)
+        ?? !!(event?.ctrlKey || event?.metaKey || event?.shiftKey || event?.altKey);
+      if (nodeType === "tag" || isModifiedClick) {
+        return originalOnNodeClick.call(this, event, path, nodeType);
       }
-      return originalOnNodeClick.call(this, event, path, nodeType);
-    };
 
-    this.localGraphNodeClickPatches.set(engine, originalOnNodeClick);
+      const targetLeaf = plugin.getMainEditorLeaf();
+      const file = plugin.app.metadataCache.getFirstLinkpathDest(path, "");
+      if (!targetLeaf || !file || typeof targetLeaf.openFile !== "function") {
+        return originalOnNodeClick.call(this, event, path, nodeType);
+      }
+
+      plugin.app.workspace.setActiveLeaf(targetLeaf, { focus: true });
+      return targetLeaf.openFile(file, { active: true });
+    };
+    renderer.onNodeClick = patchedOnNodeClick;
+
+    this.localGraphNodeClickPatches.set(engine, {
+      originalOnNodeClick,
+      patchedOnNodeClick,
+      renderer
+    });
   }
 
   restoreLocalGraphNodeNavigation(engine) {
-    const originalOnNodeClick = this.localGraphNodeClickPatches.get(engine);
-    if (!originalOnNodeClick) {
+    const patch = this.localGraphNodeClickPatches.get(engine);
+    if (!patch) {
       return;
     }
-    engine.onNodeClick = originalOnNodeClick;
+    if (patch.renderer.onNodeClick === patch.patchedOnNodeClick) {
+      patch.renderer.onNodeClick = patch.originalOnNodeClick;
+    }
     this.localGraphNodeClickPatches.delete(engine);
   }
 

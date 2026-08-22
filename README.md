@@ -12,7 +12,7 @@ Cluddle Graphs adds a highlight mode to Obsidian's graph view search. It is desi
 - **Default mode preserved**: Turn **Highlight search matches** off to return to Obsidian's default graph search behavior.
 - **Reset confirmation**: Adds a confirmation step to the graph settings reset button so graph filters, groups, display options, and forces are not reset accidentally.
 - **Local graph depth**: Keeps local graph depth at `2` for local graph panes.
-- **Local graph navigation**: Opens clicked local-graph nodes in the most recently used main editor pane instead of replacing the active graph or sidebar pane.
+- **Local graph navigation**: Opens ordinary file-node clicks from a local graph directly in the most recently used main editor pane instead of replacing the active graph or sidebar pane, while preserving native modifier-click and tag behavior.
 - **Canvas graph links**: Adds links from `.canvas` edges to graph and local graph views by reading `.canvas` files directly.
 - **Canvas parent links**: Shows links from parent Canvas nodes to their contained items by default through one synchronized graph control.
 - **Canvas card nodes**: Shows graph-only nodes for Canvas text, link, and group cards connected by Canvas edges.
