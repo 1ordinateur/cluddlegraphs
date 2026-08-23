@@ -33,6 +33,7 @@ Release notes:
 - Replaced connection-colour text dropdowns with Cluddle Graphs' existing native Obsidian colour picker.
 - Resolved saved Canvas palette slots into their actual picker colours instead of showing labels such as `Colour 19`.
 - Preserved existing palette-slot mappings and native-grey inheritance behavior.
+- Fixed repeated graph synchronization re-enabling Canvas parent links after their native toggle was turned off.
 
 ## Manual QA
 
@@ -53,6 +54,7 @@ Before submission, verify:
 - A yellow `7` source node creates a black `19` connection when that override is configured.
 - Unmapped source colours create native-grey connections.
 - Connection-colour controls use Obsidian's native colour picker and provide a reset button for inherited/native-grey behaviour.
+- Turning **Canvas parent links** off removes Canvas-to-content hub links and they remain off after graph resynchronization.
 - Recolouring a node or an existing connection does not trigger the connection default again.
 - Disabling the plugin restores the original Canvas connection-creation method.
 - Desktop graph and local graph behavior are tested. Mobile support remains disabled until Obsidian mobile graph behavior is explicitly verified.

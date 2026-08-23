@@ -1319,10 +1319,12 @@ module.exports = class CanvasGraphController {
         ? engine.options[CANVAS_CARDS_OPTION]
         : savedOptions[CANVAS_CARDS_OPTION] !== false;
     // Obsidian's native Canvas-link toggle is the single source of truth. Start
-    // enabled so old Cluddlegraphs-only false values do not survive now that
-    // their redundant control has been removed; the native control is synced
-    // immediately below when it is available.
-    engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] = true;
+    // enabled only before its state has been synchronized; repeated engine
+    // synchronization must preserve the user's current visible toggle value.
+    engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION] =
+      typeof engine.options?.[CANVAS_PARENT_MEMBERSHIPS_OPTION] === "boolean"
+        ? engine.options[CANVAS_PARENT_MEMBERSHIPS_OPTION]
+        : true;
     engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION] =
       typeof engine.options?.[CANVAS_GROUP_MEMBERSHIPS_OPTION] === "boolean"
         ? engine.options[CANVAS_GROUP_MEMBERSHIPS_OPTION]
@@ -1918,7 +1920,8 @@ module.exports = class CanvasGraphController {
   }
 
   syncNativeCanvasLinksControl(childrenEl, contentEl, engine) {
-    const settingEl = this.findNativeCanvasLinksControl(childrenEl);
+    const settingEl = this.findNativeCanvasLinksControl(contentEl)
+      ?? this.findNativeCanvasLinksControl(childrenEl);
     if (!settingEl) {
       return null;
     }
