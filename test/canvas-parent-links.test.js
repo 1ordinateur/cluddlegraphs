@@ -112,3 +112,131 @@ test("uses the visible Obsidian toggle state ahead of a stale checkbox input", (
 
   assert.equal(controller.getNativeCanvasLinksControlValue(settingEl), true);
 });
+
+test("reuses projected Canvas links until Canvas data is invalidated", () => {
+  const controller = new CanvasGraphController({});
+  controller.canvasGraphLinks = {
+    "First.canvas": {
+      "First.canvas": {
+        "Note.md": {
+          count: 2,
+          colors: ["1"],
+          edgeCount: 1,
+          parentMembershipCount: 1,
+          groupMembershipCount: 0
+        }
+      }
+    }
+  };
+  const engine = {
+    options: {
+      cluddlegraphsCanvasParentMemberships: true,
+      cluddlegraphsCanvasGroupMemberships: true
+    }
+  };
+
+  const first = controller.getCanvasGraphLinkProjection(engine);
+  const second = controller.getCanvasGraphLinkProjection(engine);
+  assert.equal(first, second);
+  assert.equal(first[controller.getLinkKey("First.canvas", "Note.md")].count, 2);
+
+  controller.canvasGraphLinks["First.canvas"]["First.canvas"]["Other.md"] = {
+    count: 1,
+    colors: [],
+    edgeCount: 0,
+    parentMembershipCount: 1,
+    groupMembershipCount: 0
+  };
+  controller.invalidateCanvasGraphLinkCache();
+
+  const refreshed = controller.getCanvasGraphLinkProjection(engine);
+  assert.notEqual(refreshed, first);
+  assert.equal(refreshed[controller.getLinkKey("First.canvas", "Other.md")].count, 1);
+});
+
+test("cached Canvas projections preserve link kinds, counts, and color order", () => {
+  const controller = new CanvasGraphController({});
+  controller.canvasGraphLinks = {
+    "First.canvas": {
+      "Source.md": {
+        "Target.md": {
+          count: 2,
+          colors: ["1"],
+          edgeCount: 1,
+          parentMembershipCount: 1,
+          groupMembershipCount: 0
+        }
+      }
+    },
+    "Second.canvas": {
+      "Source.md": {
+        "Target.md": {
+          count: 3,
+          colors: ["1", "2"],
+          edgeCount: 2,
+          parentMembershipCount: 0,
+          groupMembershipCount: 1
+        }
+      }
+    }
+  };
+  const engine = {
+    options: {
+      cluddlegraphsCanvasParentMemberships: true,
+      cluddlegraphsCanvasGroupMemberships: true
+    }
+  };
+  const linkKey = controller.getLinkKey("Source.md", "Target.md");
+
+  assert.deepEqual(controller.getCanvasGraphLinkProjection(engine)[linkKey], {
+    sourcePath: "Source.md",
+    targetPath: "Target.md",
+    count: 5,
+    colors: ["1", "2"],
+    edgeCount: 3,
+    parentMembershipCount: 1,
+    groupMembershipCount: 1
+  });
+
+  engine.options.cluddlegraphsCanvasParentMemberships = false;
+  engine.options.cluddlegraphsCanvasGroupMemberships = false;
+  assert.deepEqual(controller.getCanvasGraphLinkProjection(engine)[linkKey], {
+    sourcePath: "Source.md",
+    targetPath: "Target.md",
+    count: 3,
+    colors: ["1", "2"],
+    edgeCount: 3,
+    parentMembershipCount: 0,
+    groupMembershipCount: 0
+  });
+});
+
+test("does not schedule membership cloud work while clouds are disabled", () => {
+  const controller = new CanvasGraphController({});
+  let scheduledFrames = 0;
+  const renderer = {
+    containerEl: {
+      ownerDocument: {
+        defaultView: {
+          requestAnimationFrame() {
+            scheduledFrames++;
+            return scheduledFrames;
+          }
+        }
+      }
+    }
+  };
+  const engine = {
+    options: {
+      cluddlegraphsCanvasMembershipClouds: false
+    }
+  };
+  controller.rendererEngines.set(renderer, engine);
+
+  controller.requestMembershipCloudSync(renderer);
+  assert.equal(scheduledFrames, 0);
+
+  engine.options.cluddlegraphsCanvasMembershipClouds = true;
+  controller.requestMembershipCloudSync(renderer);
+  assert.equal(scheduledFrames, 1);
+});

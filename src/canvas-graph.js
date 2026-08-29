@@ -108,6 +108,9 @@ module.exports = class CanvasGraphController {
     this.decoratedLinkRenderers = new WeakSet();
     this.searchMatches = new WeakMap();
     this.canvasGraphLinks = {};
+    this.canvasGraphLinkRevision = 0;
+    this.canvasGraphLinkIndex = null;
+    this.canvasGraphLinkProjectionCache = new Map();
     this.canvasGraphNodes = {};
     this.canvasMemberships = {};
     this.hydration = null;
@@ -545,6 +548,7 @@ module.exports = class CanvasGraphController {
     }
 
     this.zoneAttractionLinkKeys.delete(engine);
+    this.cancelMembershipCloudSync(engine?.renderer);
     this.clearMembershipClouds(engine?.renderer);
     if (wasEnabled) {
       engine.render?.();
@@ -1146,7 +1150,7 @@ module.exports = class CanvasGraphController {
 
   requestMembershipCloudSync(renderer) {
     const engine = this.rendererEngines.get(renderer);
-    if (!engine || this.cloudSyncFrames.has(renderer)) {
+    if (!engine || !this.shouldShowMembershipClouds(engine) || this.cloudSyncFrames.has(renderer)) {
       return;
     }
 
@@ -1925,6 +1929,7 @@ module.exports = class CanvasGraphController {
       return;
     }
 
+    this.plugin.resetCanvasGraphColorStyleCache?.(renderer);
     const defaultColor = this.plugin.hexToRgb(this.getLinkColor(engine));
     const doc = renderer.containerEl?.ownerDocument ?? renderer.containerEl?.doc ?? globalThis.document;
     const canvasColorCache = new Map();
@@ -2067,6 +2072,7 @@ module.exports = class CanvasGraphController {
     }
 
     this.canvasGraphLinks = links;
+    this.invalidateCanvasGraphLinkCache();
     this.canvasGraphNodes = nodes;
     this.canvasMemberships = memberships;
     this.hydrated = true;
@@ -2503,22 +2509,65 @@ module.exports = class CanvasGraphController {
 
   getCanvasGraphLinks(data, engine) {
     const links = {};
+    for (const [key, link] of Object.entries(this.getCanvasGraphLinkProjection(engine))) {
+      if (!this.shouldAllowGraphNode(engine, link.sourcePath)
+        || !this.shouldAllowGraphNode(engine, link.targetPath)) {
+        continue;
+      }
+
+      links[key] = link;
+    }
+
+    return engine.options?.localFile ? this.filterLocalCanvasGraphLinks(engine, links) : links;
+  }
+
+  getCanvasGraphLinkProjection(engine) {
+    const projectionKey = `${this.shouldShowParentMemberships(engine) ? 1 : 0}:${this.shouldShowGroupMemberships(engine) ? 1 : 0}`;
+    const cached = this.canvasGraphLinkProjectionCache.get(projectionKey);
+    if (cached?.revision === this.canvasGraphLinkRevision) {
+      return cached.links;
+    }
+
+    const links = {};
+    for (const [key, link] of Object.entries(this.getCanvasGraphLinkIndex())) {
+      const visibleCount = this.getVisibleCanvasGraphLinkCount(link, engine);
+      if (visibleCount === 0) {
+        continue;
+      }
+
+      links[key] = {
+        sourcePath: link.sourcePath,
+        targetPath: link.targetPath,
+        count: visibleCount,
+        colors: this.getVisibleCanvasGraphLinkColors(link),
+        edgeCount: this.getCanvasGraphEdgeCount(link),
+        parentMembershipCount: this.shouldShowParentMemberships(engine) ? link.parentMembershipCount ?? 0 : 0,
+        groupMembershipCount: this.shouldShowGroupMemberships(engine) ? link.groupMembershipCount ?? 0 : 0
+      };
+    }
+
+    this.canvasGraphLinkProjectionCache.set(projectionKey, {
+      revision: this.canvasGraphLinkRevision,
+      links
+    });
+    return links;
+  }
+
+  getCanvasGraphLinkIndex() {
+    if (this.canvasGraphLinkIndex?.revision === this.canvasGraphLinkRevision) {
+      return this.canvasGraphLinkIndex.links;
+    }
+
+    const links = {};
     for (const canvasLinks of Object.values(this.canvasGraphLinks)) {
       for (const [sourcePath, targets] of Object.entries(canvasLinks)) {
         for (const [targetPath, link] of Object.entries(targets)) {
           if (sourcePath === targetPath) {
             continue;
           }
-          const visibleCount = this.getVisibleCanvasGraphLinkCount(link, engine);
-          if (visibleCount === 0) {
-            continue;
-          }
-          if (!this.shouldAllowGraphNode(engine, sourcePath) || !this.shouldAllowGraphNode(engine, targetPath)) {
-            continue;
-          }
 
           const key = this.getLinkKey(sourcePath, targetPath);
-          const existingLink = links[key] ?? {
+          const indexedLink = links[key] ??= {
             sourcePath,
             targetPath,
             count: 0,
@@ -2527,26 +2576,30 @@ module.exports = class CanvasGraphController {
             parentMembershipCount: 0,
             groupMembershipCount: 0
           };
-          existingLink.count += visibleCount;
-          existingLink.edgeCount += this.getCanvasGraphEdgeCount(link);
-          if (this.shouldShowParentMemberships(engine)) {
-            existingLink.parentMembershipCount += link.parentMembershipCount ?? 0;
-          }
-          if (this.shouldShowGroupMemberships(engine)) {
-            existingLink.groupMembershipCount += link.groupMembershipCount ?? 0;
-          }
-
+          indexedLink.count += link.count ?? 0;
+          indexedLink.edgeCount += this.getCanvasGraphEdgeCount(link);
+          indexedLink.parentMembershipCount += link.parentMembershipCount ?? 0;
+          indexedLink.groupMembershipCount += link.groupMembershipCount ?? 0;
           for (const color of this.getVisibleCanvasGraphLinkColors(link)) {
-            if (!existingLink.colors.includes(color)) {
-              existingLink.colors.push(color);
+            if (!indexedLink.colors.includes(color)) {
+              indexedLink.colors.push(color);
             }
           }
-          links[key] = existingLink;
         }
       }
     }
 
-    return engine.options?.localFile ? this.filterLocalCanvasGraphLinks(engine, links) : links;
+    this.canvasGraphLinkIndex = {
+      revision: this.canvasGraphLinkRevision,
+      links
+    };
+    return links;
+  }
+
+  invalidateCanvasGraphLinkCache() {
+    this.canvasGraphLinkRevision++;
+    this.canvasGraphLinkIndex = null;
+    this.canvasGraphLinkProjectionCache.clear();
   }
 
   getVisibleCanvasGraphLinkCount(link, engine) {

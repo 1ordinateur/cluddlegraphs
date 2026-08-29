@@ -49,6 +49,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.rendererPatches = new WeakMap();
     this.nodePatches = new WeakMap();
     this.linkPatches = new WeakMap();
+    this.canvasGraphColorStyleCaches = new WeakMap();
     this.localGraphNodeClickPatches = new WeakMap();
     this.filterControls = new WeakMap();
     this.displayControls = new WeakMap();
@@ -802,6 +803,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
+    this.resetCanvasGraphColorStyleCache(renderer);
+
     const rendererPatch = this.rendererPatches.get(renderer);
     if (rendererPatch) {
       delete renderer.isSearchHighlightedNode;
@@ -922,12 +925,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const previousNodeColor = node.color;
     const hadNodeColor = Object.prototype.hasOwnProperty.call(node, "color");
     const previousFill = colors.fill;
-    node.color = {
-      ...previousNodeColor,
-      a: typeof previousNodeColor?.a === "number" ? previousNodeColor.a : 1,
-      rgb: color
-    };
-    colors.fill = { ...previousFill, rgb: color };
+    node.color = this.getCachedCanvasGraphColorStyle(renderer, previousNodeColor, color, true);
+    colors.fill = this.getCachedCanvasGraphColorStyle(renderer, previousFill, color);
 
     try {
       return renderNode();
@@ -961,9 +960,9 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const previousLine = colors.line;
     const previousLineHighlight = colors.lineHighlight;
     const previousArrow = colors.arrow;
-    colors.line = { ...previousLine, rgb: color };
-    colors.lineHighlight = { ...previousLineHighlight, rgb: color };
-    colors.arrow = { ...previousArrow, rgb: color };
+    colors.line = this.getCachedCanvasGraphColorStyle(renderer, previousLine, color);
+    colors.lineHighlight = this.getCachedCanvasGraphColorStyle(renderer, previousLineHighlight, color);
+    colors.arrow = this.getCachedCanvasGraphColorStyle(renderer, previousArrow, color);
 
     try {
       return renderLink();
@@ -971,6 +970,54 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       colors.line = previousLine;
       colors.lineHighlight = previousLineHighlight;
       colors.arrow = previousArrow;
+    }
+  }
+
+  getCachedCanvasGraphColorStyle(renderer, baseStyle, color, ensureOpaqueAlpha = false) {
+    this.canvasGraphColorStyleCaches ??= new WeakMap();
+    let rendererCache = this.canvasGraphColorStyleCaches.get(renderer);
+    if (!rendererCache) {
+      rendererCache = {
+        baseStyles: new WeakMap(),
+        emptyStyles: new Map()
+      };
+      this.canvasGraphColorStyleCaches.set(renderer, rendererCache);
+    }
+
+    const isObjectStyle = !!baseStyle && typeof baseStyle === "object";
+    let colorStyles;
+    if (isObjectStyle) {
+      let baseStyleCache = rendererCache.baseStyles.get(baseStyle);
+      if (!baseStyleCache || baseStyleCache.alpha !== baseStyle.a) {
+        baseStyleCache = {
+          alpha: baseStyle.a,
+          colorStyles: new Map()
+        };
+        rendererCache.baseStyles.set(baseStyle, baseStyleCache);
+      }
+      colorStyles = baseStyleCache.colorStyles;
+    } else {
+      colorStyles = rendererCache.emptyStyles;
+    }
+
+    const cacheKey = `${ensureOpaqueAlpha ? "opaque" : "preserve"}:${color}`;
+    let style = colorStyles.get(cacheKey);
+    if (!style) {
+      style = {
+        ...(isObjectStyle ? baseStyle : {}),
+        ...(ensureOpaqueAlpha
+          ? { a: typeof baseStyle?.a === "number" ? baseStyle.a : 1 }
+          : {}),
+        rgb: color
+      };
+      colorStyles.set(cacheKey, style);
+    }
+    return style;
+  }
+
+  resetCanvasGraphColorStyleCache(renderer) {
+    if (renderer) {
+      this.canvasGraphColorStyleCaches?.delete(renderer);
     }
   }
 
@@ -1224,6 +1271,9 @@ module.exports = class CanvasGraphController {
     this.decoratedLinkRenderers = new WeakSet();
     this.searchMatches = new WeakMap();
     this.canvasGraphLinks = {};
+    this.canvasGraphLinkRevision = 0;
+    this.canvasGraphLinkIndex = null;
+    this.canvasGraphLinkProjectionCache = new Map();
     this.canvasGraphNodes = {};
     this.canvasMemberships = {};
     this.hydration = null;
@@ -1661,6 +1711,7 @@ module.exports = class CanvasGraphController {
     }
 
     this.zoneAttractionLinkKeys.delete(engine);
+    this.cancelMembershipCloudSync(engine?.renderer);
     this.clearMembershipClouds(engine?.renderer);
     if (wasEnabled) {
       engine.render?.();
@@ -2262,7 +2313,7 @@ module.exports = class CanvasGraphController {
 
   requestMembershipCloudSync(renderer) {
     const engine = this.rendererEngines.get(renderer);
-    if (!engine || this.cloudSyncFrames.has(renderer)) {
+    if (!engine || !this.shouldShowMembershipClouds(engine) || this.cloudSyncFrames.has(renderer)) {
       return;
     }
 
@@ -3041,6 +3092,7 @@ module.exports = class CanvasGraphController {
       return;
     }
 
+    this.plugin.resetCanvasGraphColorStyleCache?.(renderer);
     const defaultColor = this.plugin.hexToRgb(this.getLinkColor(engine));
     const doc = renderer.containerEl?.ownerDocument ?? renderer.containerEl?.doc ?? globalThis.document;
     const canvasColorCache = new Map();
@@ -3183,6 +3235,7 @@ module.exports = class CanvasGraphController {
     }
 
     this.canvasGraphLinks = links;
+    this.invalidateCanvasGraphLinkCache();
     this.canvasGraphNodes = nodes;
     this.canvasMemberships = memberships;
     this.hydrated = true;
@@ -3619,22 +3672,65 @@ module.exports = class CanvasGraphController {
 
   getCanvasGraphLinks(data, engine) {
     const links = {};
+    for (const [key, link] of Object.entries(this.getCanvasGraphLinkProjection(engine))) {
+      if (!this.shouldAllowGraphNode(engine, link.sourcePath)
+        || !this.shouldAllowGraphNode(engine, link.targetPath)) {
+        continue;
+      }
+
+      links[key] = link;
+    }
+
+    return engine.options?.localFile ? this.filterLocalCanvasGraphLinks(engine, links) : links;
+  }
+
+  getCanvasGraphLinkProjection(engine) {
+    const projectionKey = `${this.shouldShowParentMemberships(engine) ? 1 : 0}:${this.shouldShowGroupMemberships(engine) ? 1 : 0}`;
+    const cached = this.canvasGraphLinkProjectionCache.get(projectionKey);
+    if (cached?.revision === this.canvasGraphLinkRevision) {
+      return cached.links;
+    }
+
+    const links = {};
+    for (const [key, link] of Object.entries(this.getCanvasGraphLinkIndex())) {
+      const visibleCount = this.getVisibleCanvasGraphLinkCount(link, engine);
+      if (visibleCount === 0) {
+        continue;
+      }
+
+      links[key] = {
+        sourcePath: link.sourcePath,
+        targetPath: link.targetPath,
+        count: visibleCount,
+        colors: this.getVisibleCanvasGraphLinkColors(link),
+        edgeCount: this.getCanvasGraphEdgeCount(link),
+        parentMembershipCount: this.shouldShowParentMemberships(engine) ? link.parentMembershipCount ?? 0 : 0,
+        groupMembershipCount: this.shouldShowGroupMemberships(engine) ? link.groupMembershipCount ?? 0 : 0
+      };
+    }
+
+    this.canvasGraphLinkProjectionCache.set(projectionKey, {
+      revision: this.canvasGraphLinkRevision,
+      links
+    });
+    return links;
+  }
+
+  getCanvasGraphLinkIndex() {
+    if (this.canvasGraphLinkIndex?.revision === this.canvasGraphLinkRevision) {
+      return this.canvasGraphLinkIndex.links;
+    }
+
+    const links = {};
     for (const canvasLinks of Object.values(this.canvasGraphLinks)) {
       for (const [sourcePath, targets] of Object.entries(canvasLinks)) {
         for (const [targetPath, link] of Object.entries(targets)) {
           if (sourcePath === targetPath) {
             continue;
           }
-          const visibleCount = this.getVisibleCanvasGraphLinkCount(link, engine);
-          if (visibleCount === 0) {
-            continue;
-          }
-          if (!this.shouldAllowGraphNode(engine, sourcePath) || !this.shouldAllowGraphNode(engine, targetPath)) {
-            continue;
-          }
 
           const key = this.getLinkKey(sourcePath, targetPath);
-          const existingLink = links[key] ?? {
+          const indexedLink = links[key] ??= {
             sourcePath,
             targetPath,
             count: 0,
@@ -3643,26 +3739,30 @@ module.exports = class CanvasGraphController {
             parentMembershipCount: 0,
             groupMembershipCount: 0
           };
-          existingLink.count += visibleCount;
-          existingLink.edgeCount += this.getCanvasGraphEdgeCount(link);
-          if (this.shouldShowParentMemberships(engine)) {
-            existingLink.parentMembershipCount += link.parentMembershipCount ?? 0;
-          }
-          if (this.shouldShowGroupMemberships(engine)) {
-            existingLink.groupMembershipCount += link.groupMembershipCount ?? 0;
-          }
-
+          indexedLink.count += link.count ?? 0;
+          indexedLink.edgeCount += this.getCanvasGraphEdgeCount(link);
+          indexedLink.parentMembershipCount += link.parentMembershipCount ?? 0;
+          indexedLink.groupMembershipCount += link.groupMembershipCount ?? 0;
           for (const color of this.getVisibleCanvasGraphLinkColors(link)) {
-            if (!existingLink.colors.includes(color)) {
-              existingLink.colors.push(color);
+            if (!indexedLink.colors.includes(color)) {
+              indexedLink.colors.push(color);
             }
           }
-          links[key] = existingLink;
         }
       }
     }
 
-    return engine.options?.localFile ? this.filterLocalCanvasGraphLinks(engine, links) : links;
+    this.canvasGraphLinkIndex = {
+      revision: this.canvasGraphLinkRevision,
+      links
+    };
+    return links;
+  }
+
+  invalidateCanvasGraphLinkCache() {
+    this.canvasGraphLinkRevision++;
+    this.canvasGraphLinkIndex = null;
+    this.canvasGraphLinkProjectionCache.clear();
   }
 
   getVisibleCanvasGraphLinkCount(link, engine) {

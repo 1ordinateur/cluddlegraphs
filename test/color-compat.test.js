@@ -91,3 +91,45 @@ test("preserves a native node color's alpha while replacing its RGB value", () =
   assert.deepEqual(renderedColor, { a: 0.4, rgb: 0x87c517 });
   assert.equal(node.color, originalColor);
 });
+
+test("reuses Canvas graph color styles without retaining them on the renderer", () => {
+  const plugin = Object.create(CluddleGraphsPlugin.prototype);
+  const originalLine = { a: 0.6, rgb: 0x111111 };
+  const originalHighlight = { a: 0.8, rgb: 0x222222 };
+  const originalArrow = { a: 1, rgb: 0x333333 };
+  const renderer = {
+    colors: {
+      line: originalLine,
+      lineHighlight: originalHighlight,
+      arrow: originalArrow
+    }
+  };
+  const link = { __cluddlegraphsCanvasLinkColor: 0x87c517 };
+  const renderedStyles = [];
+
+  for (let index = 0; index < 2; index++) {
+    plugin.renderWithCanvasGraphLinkColor(renderer, link, () => {
+      renderedStyles.push([
+        renderer.colors.line,
+        renderer.colors.lineHighlight,
+        renderer.colors.arrow
+      ]);
+    });
+  }
+
+  assert.equal(renderedStyles[0][0], renderedStyles[1][0]);
+  assert.equal(renderedStyles[0][1], renderedStyles[1][1]);
+  assert.equal(renderedStyles[0][2], renderedStyles[1][2]);
+  assert.deepEqual(renderedStyles[0][0], { a: 0.6, rgb: 0x87c517 });
+  assert.equal(renderer.colors.line, originalLine);
+  assert.equal(renderer.colors.lineHighlight, originalHighlight);
+  assert.equal(renderer.colors.arrow, originalArrow);
+
+  originalLine.a = 0.3;
+  let refreshedLine;
+  plugin.renderWithCanvasGraphLinkColor(renderer, link, () => {
+    refreshedLine = renderer.colors.line;
+  });
+  assert.notEqual(refreshedLine, renderedStyles[0][0]);
+  assert.deepEqual(refreshedLine, { a: 0.3, rgb: 0x87c517 });
+});

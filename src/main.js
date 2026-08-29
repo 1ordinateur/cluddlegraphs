@@ -45,6 +45,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.rendererPatches = new WeakMap();
     this.nodePatches = new WeakMap();
     this.linkPatches = new WeakMap();
+    this.canvasGraphColorStyleCaches = new WeakMap();
     this.localGraphNodeClickPatches = new WeakMap();
     this.filterControls = new WeakMap();
     this.displayControls = new WeakMap();
@@ -798,6 +799,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
+    this.resetCanvasGraphColorStyleCache(renderer);
+
     const rendererPatch = this.rendererPatches.get(renderer);
     if (rendererPatch) {
       delete renderer.isSearchHighlightedNode;
@@ -918,12 +921,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const previousNodeColor = node.color;
     const hadNodeColor = Object.prototype.hasOwnProperty.call(node, "color");
     const previousFill = colors.fill;
-    node.color = {
-      ...previousNodeColor,
-      a: typeof previousNodeColor?.a === "number" ? previousNodeColor.a : 1,
-      rgb: color
-    };
-    colors.fill = { ...previousFill, rgb: color };
+    node.color = this.getCachedCanvasGraphColorStyle(renderer, previousNodeColor, color, true);
+    colors.fill = this.getCachedCanvasGraphColorStyle(renderer, previousFill, color);
 
     try {
       return renderNode();
@@ -957,9 +956,9 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const previousLine = colors.line;
     const previousLineHighlight = colors.lineHighlight;
     const previousArrow = colors.arrow;
-    colors.line = { ...previousLine, rgb: color };
-    colors.lineHighlight = { ...previousLineHighlight, rgb: color };
-    colors.arrow = { ...previousArrow, rgb: color };
+    colors.line = this.getCachedCanvasGraphColorStyle(renderer, previousLine, color);
+    colors.lineHighlight = this.getCachedCanvasGraphColorStyle(renderer, previousLineHighlight, color);
+    colors.arrow = this.getCachedCanvasGraphColorStyle(renderer, previousArrow, color);
 
     try {
       return renderLink();
@@ -967,6 +966,54 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       colors.line = previousLine;
       colors.lineHighlight = previousLineHighlight;
       colors.arrow = previousArrow;
+    }
+  }
+
+  getCachedCanvasGraphColorStyle(renderer, baseStyle, color, ensureOpaqueAlpha = false) {
+    this.canvasGraphColorStyleCaches ??= new WeakMap();
+    let rendererCache = this.canvasGraphColorStyleCaches.get(renderer);
+    if (!rendererCache) {
+      rendererCache = {
+        baseStyles: new WeakMap(),
+        emptyStyles: new Map()
+      };
+      this.canvasGraphColorStyleCaches.set(renderer, rendererCache);
+    }
+
+    const isObjectStyle = !!baseStyle && typeof baseStyle === "object";
+    let colorStyles;
+    if (isObjectStyle) {
+      let baseStyleCache = rendererCache.baseStyles.get(baseStyle);
+      if (!baseStyleCache || baseStyleCache.alpha !== baseStyle.a) {
+        baseStyleCache = {
+          alpha: baseStyle.a,
+          colorStyles: new Map()
+        };
+        rendererCache.baseStyles.set(baseStyle, baseStyleCache);
+      }
+      colorStyles = baseStyleCache.colorStyles;
+    } else {
+      colorStyles = rendererCache.emptyStyles;
+    }
+
+    const cacheKey = `${ensureOpaqueAlpha ? "opaque" : "preserve"}:${color}`;
+    let style = colorStyles.get(cacheKey);
+    if (!style) {
+      style = {
+        ...(isObjectStyle ? baseStyle : {}),
+        ...(ensureOpaqueAlpha
+          ? { a: typeof baseStyle?.a === "number" ? baseStyle.a : 1 }
+          : {}),
+        rgb: color
+      };
+      colorStyles.set(cacheKey, style);
+    }
+    return style;
+  }
+
+  resetCanvasGraphColorStyleCache(renderer) {
+    if (renderer) {
+      this.canvasGraphColorStyleCaches?.delete(renderer);
     }
   }
 
