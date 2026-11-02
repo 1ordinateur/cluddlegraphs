@@ -30,6 +30,7 @@ Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Release notes:
 
+- A Canvas connection inside a group now shows the colour of that group. The smallest group that holds both ends of the connection gives the colour. A group can also be one end of the connection. A group with no colour uses the colour of its parent group. The group colour replaces the colour of the connection itself. If no group holds both ends, or if no group in that chain has a colour, the connection keeps its own colour. The links from a group to its cards do not change.
 - A graph updates only while you can see it. A graph in a tab that is not active, in a collapsed sidebar or in a minimized window does not rebuild and does not draw. When it shows again, it rebuilds one time if it missed a change, and it draws its latest layout. Before, a hidden graph rebuilt after each note or Canvas save, and each release of an arrow key, `-` or `=` made it draw for 61 frames.
 - Obsidian stays responsive while the graph layout moves, for example after a new link or note. Obsidian draws the full graph on the main thread, which also runs the editor. While the layout moves, and for the 61 idle frames after it, the graph now draws at most about 30 frames a second. It also waits at least as long as the last frame took, so the graph uses at most about half of the main thread. A hover, pan or zoom without layout motion keeps the full frame rate.
 - Large graphs render faster. Canvas node shapes are drawn one time in white, and Obsidian's native tint gives their colour. Before, each Canvas node shape was drawn again in each animation frame.
@@ -65,6 +66,7 @@ Before submission, verify:
 - Disabling the plugin restores the original Canvas connection-creation method.
 - Canvas text, link, and group cards show their true Canvas or inherited colour, and their shapes stay the same while the graph moves.
 - Canvas link colours show on lines and arrows, also while a node is hovered.
+- In a Canvas, connect two cards in one coloured group, also with a connection that has its own colour. The graph link shows the group colour. A connection to a card in a different group keeps its own colour.
 - A Canvas save that only moves a card inside the same group does not rebuild the graph. A new note that a Canvas refers to appears in the graph after a short delay.
 - Canvas zone clouds stay on their nodes while you drag the graph and after a window resize.
 - With a graph tab open in the background, typing in a note and editing a Canvas stay smooth. In the developer tools, a Performance recording made while you type shows no graph frames after the rebuild.

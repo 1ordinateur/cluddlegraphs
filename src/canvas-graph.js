@@ -2545,7 +2545,8 @@ module.exports = class CanvasGraphController {
       nodes[targetNode.id] = this.toGraphNodeMetadata(targetNode);
       this.addCanvasGraphLink(links, sourceNode.id, targetNode.id, {
         kind: "edge",
-        color: edge.color
+        color: this.getCanvasEdgeGroupColor(edge, groupMembership, parentGroupByNodeId, inheritedGroupColors)
+          ?? edge.color
       });
     }
 
@@ -2604,6 +2605,25 @@ module.exports = class CanvasGraphController {
     }
 
     return this.calculateGroupMembershipMetadata(data, geometryHash);
+  }
+
+  // A connection inside a group shows the colour of the smallest group that holds both ends.
+  getCanvasEdgeGroupColor(edge, groupMembership, parentGroupByNodeId, inheritedGroupColors) {
+    const sourceGroupIds = this.getCanvasGroupChain(edge.fromNode, groupMembership, parentGroupByNodeId);
+    const targetGroupIds = new Set(this.getCanvasGroupChain(edge.toNode, groupMembership, parentGroupByNodeId));
+    const commonGroupId = sourceGroupIds.find((groupId) => targetGroupIds.has(groupId));
+    return commonGroupId ? inheritedGroupColors.get(commonGroupId) ?? null : null;
+  }
+
+  // The node itself when it is a group, then each group that holds it, from the smallest to the largest.
+  getCanvasGroupChain(nodeId, groupMembership, parentGroupByNodeId) {
+    const groupIds = [];
+    let groupId = Object.hasOwn(groupMembership?.groups ?? {}, nodeId) ? nodeId : parentGroupByNodeId[nodeId];
+    while (groupId && !groupIds.includes(groupId)) {
+      groupIds.push(groupId);
+      groupId = parentGroupByNodeId[groupId];
+    }
+    return groupIds;
   }
 
   getCanvasParentGroupByNodeId(groupMembership) {
