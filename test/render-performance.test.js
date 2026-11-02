@@ -626,6 +626,80 @@ test("marks a Canvas label dirty when the node size changes", () => {
   assert.equal(node.fontDirty, true);
 });
 
+test("marks a Canvas member note label dirty when the node size changes", () => {
+  const controller = new CanvasGraphController(createPlugin());
+  controller.canvasGraphNodes = {
+    "Note.md": { type: "file", canvasPath: "Board.canvas" }
+  };
+  const engine = { options: {} };
+  let size = 8;
+  const node = { id: "Note.md", text: { text: "Note" }, fontDirty: false, getSize: () => size };
+
+  controller.syncNode(engine, node);
+  node.fontDirty = false;
+  controller.syncNode(engine, node);
+  assert.equal(node.fontDirty, false);
+
+  size = 12;
+  controller.syncNode(engine, node);
+  assert.equal(node.fontDirty, true);
+});
+
+test("wakes the render loop when Canvas zones are set to off, so that the old clouds go away", () => {
+  const controller = new CanvasGraphController(createPlugin());
+  const renderer = {
+    wakes: 0,
+    changed() {
+      this.wakes++;
+    }
+  };
+  const engine = {
+    renderer,
+    options: { cluddlegraphsCanvasMembershipClouds: true },
+    render() {}
+  };
+
+  controller.setMembershipCloudsOption(engine, false);
+
+  assert.equal(renderer.wakes, 1);
+});
+
+test("wakes the render loop for search highlights only when the highlight changes", () => {
+  const plugin = createPlugin();
+  const first = { id: "First.md", forward: {}, reverse: {} };
+  const second = { id: "Second.md", forward: {}, reverse: {} };
+  const renderer = {
+    nodes: [first, second],
+    links: [],
+    nodeLookup: { "First.md": first, "Second.md": second },
+    getHighlightNode: () => null,
+    wakes: 0,
+    changed() {
+      this.wakes++;
+    }
+  };
+  const hit = { a: 1, rgb: 0xff2d55, __cluddlegraphsSearchHit: true };
+  const engine = {
+    renderer,
+    options: { searchHighlightMode: true, searchHighlightColor: "#ff2d55" },
+    filterOptions: { search: { getValue: () => "hit" } },
+    fileFilter: { "First.md": hit }
+  };
+
+  plugin.syncRendererSearchHighlights(engine);
+  assert.equal(renderer.wakes, 1);
+  plugin.syncRendererSearchHighlights(engine);
+  assert.equal(renderer.wakes, 1, "the same highlight must leave the render loop idle");
+
+  engine.fileFilter = { "First.md": hit, "Second.md": hit };
+  plugin.syncRendererSearchHighlights(engine);
+  assert.equal(renderer.wakes, 2, "a new highlighted node wakes the render loop");
+
+  engine.options.searchHighlightColor = "#00ff00";
+  plugin.syncRendererSearchHighlights(engine);
+  assert.equal(renderer.wakes, 3, "a new highlight colour wakes the render loop");
+});
+
 // Native setData calls changed() only when the graph changed. changed() makes the native loop draw
 // every node and link for 61 frames, also in a hidden graph tab.
 test("wakes the native render loop after a rebuild only when a node or link looks different", () => {
@@ -1027,6 +1101,24 @@ test("reloads a Canvas when a new file resolves its reference with a different l
   } finally {
     mock.timers.reset();
   }
+});
+
+test("stops the Canvas reads of a full reload after unload", async () => {
+  const harness = createVaultHarness({
+    "A.canvas": canvasSource(["Note.md"]),
+    "B.canvas": canvasSource([]),
+    "C.canvas": canvasSource([])
+  }, ["Note.md"]);
+  const releaseA = harness.gate("A.canvas");
+  const load = harness.controller.hydrate();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(harness.reads, ["A.canvas"]);
+
+  harness.controller.onunload();
+  releaseA();
+  await load;
+
+  assert.deepEqual(harness.reads, ["A.canvas"]);
 });
 
 test("starts a later reload after a batch that maps to no Canvas", async () => {
