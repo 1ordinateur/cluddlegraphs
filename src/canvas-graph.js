@@ -276,9 +276,6 @@ module.exports = class CanvasGraphController {
     const patch = renderer ? this.rendererPatches.get(renderer) : null;
     if (patch) {
       renderer.setData = patch.setData;
-      if (patch.changed) {
-        renderer.changed = patch.changed;
-      }
       this.rendererPatches.delete(renderer);
     }
 
@@ -1084,7 +1081,6 @@ module.exports = class CanvasGraphController {
     }
 
     const originalSetData = renderer.setData;
-    const originalChanged = typeof renderer.changed === "function" ? renderer.changed : null;
     const controller = this;
     renderer.setData = function(data) {
       if (!controller.hydrated) {
@@ -1101,15 +1097,9 @@ module.exports = class CanvasGraphController {
       controller.revealRendererAfterHydration(this);
       return result;
     };
-    if (originalChanged) {
-      renderer.changed = function(...args) {
-        const result = originalChanged.apply(this, args);
-        controller.requestMembershipCloudSync(this);
-        return result;
-      };
-    }
+    // Node frames request the zone cloud sync, so the clouds follow the drawn frames and the layout frame limit.
 
-    this.rendererPatches.set(renderer, { setData: originalSetData, changed: originalChanged });
+    this.rendererPatches.set(renderer, { setData: originalSetData });
   }
 
   prepareNativeGraphDataWhileHydrating(data, engine) {

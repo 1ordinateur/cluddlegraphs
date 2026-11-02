@@ -30,6 +30,7 @@ Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Release notes:
 
+- Obsidian stays responsive while the graph layout moves, for example after a new link or note. Obsidian draws the full graph on the main thread, which also runs the editor. While the layout moves, and for the 61 idle frames after it, the graph now draws at most about 30 frames a second. It also waits at least as long as the last frame took, so the graph uses at most about half of the main thread. A hover, pan or zoom without layout motion keeps the full frame rate.
 - Large graphs render faster. Canvas node shapes are drawn one time in white, and Obsidian's native tint gives their colour. Before, each Canvas node shape was drawn again in each animation frame.
 - Canvas card colours go into the graph data, so Obsidian's native renderer applies them. Coloured cards now show their true colour. Before, the colour was applied two times, so the cards looked darker.
 - Canvas link colours are written to the link tint after the native render. Renderer colours are no longer swapped in each frame.
@@ -66,4 +67,6 @@ Before submission, verify:
 - A Canvas save that only moves a card inside the same group does not rebuild the graph. A new note that a Canvas refers to appears in the graph after a short delay.
 - Canvas zone clouds stay on their nodes while you drag the graph and after a window resize.
 - With a graph tab open in the background, typing in a note and editing a Canvas stay smooth. In the developer tools, a Performance recording made while you type shows no graph frames after the rebuild.
+- With the global graph open, create a Canvas connection, a note link and a new note. Obsidian stays responsive while the layout moves. A Performance recording shows at most about 30 graph frames a second, with idle time between them.
+- In a graph whose layout is still, a hover, pan or zoom moves at the full frame rate.
 - Desktop graph and local graph behavior are tested. Mobile support remains disabled until Obsidian mobile graph behavior is explicitly verified.

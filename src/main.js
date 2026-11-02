@@ -14,6 +14,7 @@ const {
   CANVAS_NODE_SHAPE_PROPERTY,
   CANVAS_ZONE_ATTRACTION_PROPERTY
 } = require("./graph-properties");
+const { limitLayoutFrames, restoreLayoutFrames } = require("./layout-frame-limit");
 
 const TARGET_DEPTH = 2;
 const GRAPH_VIEW_TYPE = "graph";
@@ -690,6 +691,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
+    limitLayoutFrames(renderer);
     if (typeof renderer.getHighlightNode !== "function") {
       return;
     }
@@ -845,6 +847,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
+    restoreLayoutFrames(renderer);
     const rendererPatch = this.rendererPatches.get(renderer);
     if (rendererPatch) {
       delete renderer.isSearchHighlightedNode;
