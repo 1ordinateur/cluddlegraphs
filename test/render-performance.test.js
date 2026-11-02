@@ -2,6 +2,8 @@ const assert = require("node:assert/strict");
 const { test, mock } = require("node:test");
 const Module = require("node:module");
 const path = require("node:path");
+const v8 = require("node:v8");
+const vm = require("node:vm");
 
 class TFile {}
 
@@ -1627,4 +1629,48 @@ test("removes the visibility watch when the graph view closes and when the plugi
   plugin.restoreGraphEngine(restored.engine);
   assert.equal(restored.state.observers, 0);
   assert.equal(restored.state.listeners, 0);
+});
+
+test("keeps no plugin instance in memory through the view close callback after the plugin unloads", async () => {
+  v8.setFlagsFromString("--expose-gc");
+  const collectGarbage = vm.runInNewContext("gc");
+  const closeCallbacks = [];
+  const el = {
+    win: {
+      ResizeObserver: function() {
+        return { observe() {}, disconnect() {} };
+      }
+    },
+    ownerDocument: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
+    isConnected: true,
+    clientWidth: 800,
+    clientHeight: 600
+  };
+  const renderer = { nodes: [], links: [], containerEl: el, getHighlightNode: () => null, changed() {} };
+  // Obsidian keeps each register callback on the view until the view closes.
+  const view = {
+    register(callback) {
+      closeCallbacks.push(callback);
+    }
+  };
+  const engine = { renderer, view, options: {}, setQuery() {}, render() {} };
+
+  const pluginRef = (() => {
+    const plugin = createPlugin({
+      enginePatches: new WeakMap(),
+      localGraphNodeClickPatches: new WeakMap(),
+      resetButtonPatches: new WeakMap(),
+      filterControls: new WeakMap(),
+      displayControls: new WeakMap(),
+      canvasGraph: { syncSearchMatches() {}, restoreEngine() {} }
+    });
+    plugin.patchGraphEngine(engine);
+    plugin.restoreGraphEngine(engine);
+    return new WeakRef(plugin);
+  })();
+  await new Promise((resolve) => setImmediate(resolve));
+  collectGarbage();
+
+  assert.equal(closeCallbacks.length, 1);
+  assert.equal(pluginRef.deref(), undefined, "an open graph view must not keep the old plugin instance after unload");
 });
