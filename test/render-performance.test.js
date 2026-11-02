@@ -1452,3 +1452,26 @@ test("limits layout frames for each patched graph renderer and removes the limit
   assert.equal(renderer.queueRender, nativeQueueRender);
   assert.equal(renderer.worker.onmessage, nativeOnMessage);
 });
+
+test("syncs zone clouds from drawn frames, not from each render loop wake", () => {
+  let queuedFrames = 0;
+  const controller = new CanvasGraphController(createPlugin());
+  const renderer = {
+    setData() {},
+    changed() {},
+    containerEl: {
+      ownerDocument: {
+        defaultView: { requestAnimationFrame: () => ++queuedFrames, cancelAnimationFrame() {} }
+      }
+    }
+  };
+  const engine = { renderer, options: { cluddlegraphsCanvasMembershipClouds: true } };
+  controller.patchRenderer(engine);
+
+  // Each layout worker message calls changed(). Node frames request the cloud sync, under the frame limit.
+  renderer.changed();
+  assert.equal(queuedFrames, 0, "a render loop wake must not queue its own cloud sync frame");
+
+  controller.requestMembershipCloudSync(renderer);
+  assert.equal(queuedFrames, 1);
+});

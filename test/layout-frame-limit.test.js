@@ -5,8 +5,9 @@ const { limitLayoutFrames, restoreLayoutFrames } = require("../src/layout-frame-
 const REFRESH_MS = 1000 / 60;
 
 // A display that refreshes at 60 Hz. Frame work moves the clock forward, as main thread work does.
-function createDisplay() {
-  let now = 0;
+// Each window has its own clock origin, so a window that opens later shows a smaller time.
+function createDisplay(start = 0) {
+  let now = start;
   let nextId = 1;
   let pending = [];
   const win = {
@@ -28,6 +29,7 @@ function createDisplay() {
       now += ms;
     },
     hasPendingFrames: () => pending.length > 0,
+    pendingFrameCount: () => pending.length,
     // Run each display refresh up to `until`. `beforeRefresh` runs first, for example for a worker message.
     run(until, beforeRefresh = () => {}) {
       for (;;) {
@@ -239,4 +241,83 @@ test("leaves a renderer without the native render loop unchanged", () => {
   assert.deepEqual(Object.keys(renderer), ["setData"]);
   limitLayoutFrames(null);
   restoreLayoutFrames(undefined);
+});
+
+test("draws again at once after the graph moves to a new window while the layout moves", () => {
+  const mainWindow = createDisplay(3600000);
+  const renderer = createNativeRenderer(mainWindow, 2);
+  limitLayoutFrames(renderer);
+  renderer.initGraphics();
+  mainWindow.run(3601000, layoutMessagesUntil(renderer, 3602000));
+
+  // Obsidian reloads the graph iframe in the new window: destroyGraphics, then initGraphics on the same renderer.
+  const popout = createDisplay(0);
+  renderer.destroyGraphics();
+  renderer.display = popout;
+  renderer.containerEl = { win: popout.win };
+  resetCounts(renderer);
+  renderer.initGraphics();
+  popout.run(1000, layoutMessagesUntil(renderer, 1000));
+
+  assert.ok(renderer.frames >= 28, `${renderer.frames} frames in the first second in the new window`);
+});
+
+test("returns to the full frame rate for a pan that starts in the idle tail after the layout", () => {
+  const display = createDisplay();
+  const renderer = createNativeRenderer(display, 2);
+  limitLayoutFrames(renderer);
+  renderer.initGraphics();
+  display.run(1000, layoutMessagesUntil(renderer, 1000));
+
+  // A pan calls changed() at each refresh, so the native loop does not stop.
+  const pan = () => renderer.changed();
+  display.run(3000, pan);
+  resetCounts(renderer);
+  display.run(4000, pan);
+
+  assert.ok(renderer.frames >= 58, `${renderer.frames} frames in one second of a pan, 2 s after the layout stopped`);
+});
+
+test("keeps one queued frame when Obsidian destroys and inits the graphics in one step while a frame waits", () => {
+  const display = createDisplay();
+  const renderer = createNativeRenderer(display, 50);
+  limitLayoutFrames(renderer);
+  renderer.initGraphics();
+  let maxPending = 0;
+  const messages = layoutMessagesUntil(renderer, 5000);
+  const watch = (time) => {
+    maxPending = Math.max(maxPending, display.pendingFrameCount());
+    messages(time);
+  };
+  display.run(130, watch);
+  const frames = renderer.frames;
+
+  renderer.destroyGraphics();
+  renderer.initGraphics();
+  assert.equal(display.pendingFrameCount(), 1);
+  display.run(3000, watch);
+
+  assert.equal(maxPending, 1, "there must never be two frame chains");
+  assert.ok(renderer.frames > frames + 10, "the graph must continue to draw after the new init");
+});
+
+test("draws a waiting frame after a restore and then continues at the native rate", () => {
+  const display = createDisplay();
+  const renderer = createNativeRenderer(display, 2);
+  limitLayoutFrames(renderer);
+  renderer.initGraphics();
+  let maxPending = 0;
+  const messages = layoutMessagesUntil(renderer, 2000);
+  const watch = (time) => {
+    maxPending = Math.max(maxPending, display.pendingFrameCount());
+    messages(time);
+  };
+  display.run(500, watch);
+
+  restoreLayoutFrames(renderer);
+  resetCounts(renderer);
+  display.run(1500, watch);
+
+  assert.equal(maxPending, 1, "there must never be two frame chains");
+  assert.ok(renderer.frames >= 58, `${renderer.frames} frames in one second after the restore`);
 });
