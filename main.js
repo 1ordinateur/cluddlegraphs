@@ -38,6 +38,13 @@ const GRAPH_NODE_CENTER = 100;
 const GRAPH_NODE_RADIUS = 100;
 const GRAPH_NODE_DIAMETER = GRAPH_NODE_RADIUS * 2;
 
+// Remove the visibility watch when the graph view closes, because a closed view must not stay in memory
+// through the document listener of the watch. Obsidian keeps the callback on the view until the view closes,
+// so the callback is made here and holds only the view and the renderer, not the plugin.
+function unwatchOnViewClose(view, renderer) {
+  view?.register?.(() => unwatchGraphVisibility(renderer));
+}
+
 module.exports = class CluddleGraphsPlugin extends Plugin {
   async onload() {
     this.unloaded = false;
@@ -396,8 +403,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.patchRenderer(engine.renderer);
     const renderer = engine.renderer;
     watchGraphVisibility(renderer, () => this.showGraph(engine));
-    // A closed graph view must not stay in memory through the document listener of the watch.
-    engine.view?.register?.(() => unwatchGraphVisibility(renderer));
+    unwatchOnViewClose(engine.view, renderer);
   }
 
   // Rebuild the graph if it missed a change while hidden, and draw its latest layout.
