@@ -110,7 +110,7 @@ function createVaultHarness(sources, extraFiles = []) {
   const reads = [];
   const files = new Map();
   const gates = new Map();
-  const state = { graphOpen: true, failGetFiles: false };
+  const state = { graphOpen: true, failGetFiles: false, failReads: new Set() };
   let renders = 0;
 
   const makeFile = (filePath) => Object.assign(new TFile(), {
@@ -137,6 +137,9 @@ function createVaultHarness(sources, extraFiles = []) {
     getAbstractFileByPath: (filePath) => files.get(filePath) ?? null,
     async cachedRead(file) {
       reads.push(file.path);
+      if (state.failReads.delete(file.path)) {
+        throw new Error("file locked");
+      }
       const gate = gates.get(file.path);
       if (gate) {
         gates.delete(file.path);
@@ -813,6 +816,112 @@ test("reloads a Canvas when a new file resolves its reference with a different l
   }
 });
 
+test("starts a later reload after a batch that maps to no Canvas", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const harness = createVaultHarness({ "A.canvas": canvasSource(["Note.md"]) }, ["Note.md"]);
+    await harness.controller.hydrate();
+    harness.reads.length = 0;
+
+    const created = harness.makeFile("Other.md");
+    harness.files.set(created.path, created);
+    harness.vaultHandlers.create(created);
+    await settleHydration(harness);
+    assert.equal(harness.controller.hydration, null);
+
+    harness.vaultHandlers.modify(harness.files.get("A.canvas"));
+    await settleHydration(harness);
+    assert.deepEqual(harness.reads, ["A.canvas"]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("keeps the previous Canvas data when a Canvas read fails", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const harness = createVaultHarness({ "A.canvas": canvasSource(["Note.md"]) }, ["Note.md"]);
+    await harness.controller.hydrate();
+    const renders = harness.renders;
+
+    harness.state.failReads.add("A.canvas");
+    harness.vaultHandlers.modify(harness.files.get("A.canvas"));
+    await settleHydration(harness);
+
+    assert.equal(harness.controller.canvasGraphNodes["Note.md"]?.canvasPath, "A.canvas");
+    assert.equal(Object.hasOwn(harness.controller.canvasGraphLinks, "A.canvas"), true);
+    assert.deepEqual(harness.controller.getCanvasPathsReferencing(["Note.md"]), ["A.canvas"]);
+    assert.equal(harness.renders, renders);
+  } finally {
+    console.error = originalError;
+    mock.timers.reset();
+  }
+});
+
+test("gives a shared node the same Canvas after a partial reload as after a full reload", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const harness = createVaultHarness({
+      "A.canvas": canvasSource(["Note.md"]),
+      "B.canvas": canvasSource(["Note.md"])
+    }, ["Note.md"]);
+    await harness.controller.hydrate();
+
+    // A sync tool deletes and creates A.canvas in one debounce window. The vault then lists A.canvas last.
+    const canvasA = harness.files.get("A.canvas");
+    harness.files.delete("A.canvas");
+    harness.vaultHandlers.delete(canvasA);
+    harness.files.set("A.canvas", canvasA);
+    harness.vaultHandlers.create(canvasA);
+    await settleHydration(harness);
+
+    const fresh = createVaultHarness({
+      "B.canvas": harness.sources["B.canvas"],
+      "A.canvas": harness.sources["A.canvas"]
+    }, ["Note.md"]);
+    await fresh.controller.hydrate();
+
+    assert.equal(
+      harness.controller.canvasGraphNodes["Note.md"]?.canvasPath,
+      fresh.controller.canvasGraphNodes["Note.md"]?.canvasPath
+    );
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("stops queued Canvas reloads after unload", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const harness = createVaultHarness({
+      "A.canvas": canvasSource(["Note.md"]),
+      "B.canvas": canvasSource([])
+    }, ["Note.md"]);
+    await harness.controller.hydrate();
+    harness.reads.length = 0;
+    const renders = harness.renders;
+
+    const releaseA = harness.gate("A.canvas");
+    harness.sources["A.canvas"] = canvasSource(["Note.md"], ["changed"]);
+    harness.vaultHandlers.modify(harness.files.get("A.canvas"));
+    mock.timers.tick(1000);
+    harness.state.graphOpen = false;
+    harness.vaultHandlers.modify(harness.files.get("B.canvas"));
+    harness.state.graphOpen = true;
+
+    harness.controller.onunload();
+    releaseA();
+    await harness.controller.hydration;
+
+    assert.deepEqual(harness.reads, ["A.canvas"]);
+    assert.equal(harness.renders, renders);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
 test("looks up an unresolved palette colour one time in each graph rebuild", () => {
   const controller = new CanvasGraphController(createPlugin());
   const counter = { lookups: 0 };
@@ -956,6 +1065,25 @@ test("updates the world transforms one time before it maps cloud points", () => 
 
   assert.deepEqual(clouds.map((cloud) => cloud.points), [[{ x: 36, y: 54 }], [{ x: 36, y: 54 }]]);
   assert.deepEqual(updates, { hanger: 1, layer: 1 });
+});
+
+test("uses the cloud fallback when a destroyed hanger cannot update its transform", () => {
+  const controller = new CanvasGraphController(createPlugin());
+  const node = { id: "Note.md", x: 5, y: 7, circle: { scale: { x: 1, y: 1 } } };
+  const renderer = {
+    hanger: {
+      worldTransform: null,
+      toGlobal() {
+        throw new TypeError("Cannot read properties of null");
+      }
+    },
+    nodeLookup: { "Note.md": node }
+  };
+  controller.cloudLayers.set(renderer, { parent: {}, worldTransform: IDENTITY, toGlobal: () => ({ x: 0, y: 0 }) });
+  controller.canvasMemberships = { "A.canvas": ["Note.md"] };
+
+  const [cloud] = controller.getVisibleCanvasMembershipClouds(renderer);
+  assert.deepEqual(cloud.points, [{ x: 5, y: 7 }]);
 });
 
 test("redraws membership clouds only when the cloud shapes change", () => {
