@@ -522,6 +522,115 @@ test("marks a Canvas label dirty when the node size changes", () => {
   assert.equal(node.fontDirty, true);
 });
 
+// Native setData calls changed() only when the graph changed. changed() makes the native loop draw
+// every node and link for 61 frames, also in a hidden graph tab.
+test("wakes the native render loop after a rebuild only when a node or link looks different", () => {
+  const frames = [];
+  const doc = {
+    body: { appendChild() {} },
+    createElement: () => ({ classList: { add() {} }, style: {}, remove() {} }),
+    defaultView: {
+      getComputedStyle: () => ({ color: "rgb(255, 0, 0)" }),
+      requestAnimationFrame: (callback) => frames.push(callback),
+      cancelAnimationFrame() {}
+    }
+  };
+  const flushFrames = () => {
+    while (frames.length > 0) {
+      frames.shift()();
+    }
+  };
+
+  const plugin = createPlugin({
+    app: {
+      vault: { getAbstractFileByPath: () => null },
+      metadataCache: { getFirstLinkpathDest: () => null },
+      internalPlugins: { getPluginById: () => null }
+    }
+  });
+  const controller = new CanvasGraphController(plugin);
+  plugin.canvasGraph = controller;
+  const loadBoard = (label, edgeColor) => {
+    const graphData = controller.parseCanvasGraphData("Board.canvas", JSON.stringify({
+      nodes: [
+        { id: "a", type: "text", text: label, x: 0, y: 0, width: 100, height: 50 },
+        { id: "b", type: "text", text: "Beta", x: 300, y: 0, width: 100, height: 50 }
+      ],
+      edges: [{ id: "e", fromNode: "a", toNode: "b", color: edgeColor }]
+    }));
+    controller.canvasGraphLinks = { "Board.canvas": graphData.links };
+    controller.canvasGraphNodes = graphData.nodes;
+    controller.invalidateCanvasGraphLinkCache();
+  };
+  controller.hydrated = true;
+  loadBoard("Alpha", "#00ff00");
+
+  const renderer = {
+    nodes: [],
+    links: [],
+    nodeLookup: {},
+    wakes: 0,
+    containerEl: { ownerDocument: doc },
+    getHighlightNode: () => null,
+    changed() {
+      this.wakes++;
+    },
+    setData(data) {
+      for (const [id, entry] of Object.entries(data.nodes)) {
+        if (!this.nodeLookup[id]) {
+          const node = {
+            id,
+            type: entry.type,
+            renderer: this,
+            circle: createGraphics(),
+            text: { text: "" },
+            fontDirty: false,
+            getSize: () => 8,
+            render() {},
+            initGraphics() {}
+          };
+          this.nodeLookup[id] = node;
+          this.nodes.push(node);
+        }
+      }
+      for (const [id, entry] of Object.entries(data.nodes)) {
+        for (const targetId of Object.keys(entry.links)) {
+          const key = `${id}\n${targetId}`;
+          if (this.nodeLookup[targetId] && !this.links.some((link) => link.key === key)) {
+            this.links.push({ key, source: this.nodeLookup[id], target: this.nodeLookup[targetId], render() {} });
+          }
+        }
+      }
+    }
+  };
+  const engine = {
+    renderer,
+    fileFilter: {},
+    options: { cluddlegraphsCanvasLinkMode: "all", cluddlegraphsCanvasLinkColor: "#123456", showOrphans: true }
+  };
+  const createData = () => ({ nodes: { "Board.canvas": { type: "", links: {} } } });
+
+  controller.patchRenderer(engine);
+  renderer.setData(createData());
+  flushFrames();
+  assert.ok(renderer.wakes >= 1, "the first rebuild sets labels, shapes and link colours");
+  const wakes = renderer.wakes;
+
+  renderer.setData(createData());
+  flushFrames();
+  assert.equal(renderer.wakes, wakes, "a rebuild with the same data must leave the render loop idle");
+
+  loadBoard("Alpha 2", "#00ff00");
+  renderer.setData(createData());
+  flushFrames();
+  assert.equal(renderer.wakes, wakes + 1, "a new label wakes the render loop");
+
+  loadBoard("Alpha 2", "#0000ff");
+  renderer.setData(createData());
+  flushFrames();
+  assert.equal(renderer.wakes, wakes + 2, "a new link colour wakes the render loop");
+});
+
 test("appends the highlight toggle only when it is not already the last control", () => {
   const plugin = createPlugin();
   const settingEl = {};
