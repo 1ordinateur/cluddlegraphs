@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { limitLayoutFrames, restoreLayoutFrames } = require("../src/layout-frame-limit");
+const { watchGraphVisibility } = require("../src/graph-visibility");
 
 const REFRESH_MS = 1000 / 60;
 
@@ -331,4 +332,38 @@ test("draws a waiting frame after a restore and then continues at the native rat
 
   assert.equal(maxPending, 1, "there must never be two frame chains");
   assert.ok(renderer.frames >= 58, `${renderer.frames} frames in one second after the restore`);
+});
+
+test("draws no frames while the graph is hidden, and draws the latest layout when it shows", () => {
+  const display = createDisplay();
+  const renderer = createNativeRenderer(display, 2);
+  let reportSize = null;
+  display.win.ResizeObserver = function(callback) {
+    reportSize = () => callback([]);
+    return { observe() {}, disconnect() {} };
+  };
+  const el = renderer.containerEl;
+  Object.assign(el, {
+    ownerDocument: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
+    isConnected: true,
+    clientWidth: 800,
+    clientHeight: 600
+  });
+  limitLayoutFrames(renderer);
+  watchGraphVisibility(renderer, () => renderer.changed());
+  renderer.initGraphics();
+
+  // The user opens another tab in the same tab group, so Obsidian hides the graph tab.
+  el.clientWidth = 0;
+  el.clientHeight = 0;
+  reportSize();
+  display.run(2000, layoutMessagesUntil(renderer, 1500));
+  assert.equal(renderer.frames, 0, "a hidden graph must not draw");
+  assert.equal(display.hasPendingFrames(), false, "a hidden graph must not queue frames");
+
+  el.clientWidth = 800;
+  el.clientHeight = 600;
+  reportSize();
+  display.run(3000);
+  assert.ok(renderer.frames >= 25, `${renderer.frames} frames in the first second after the graph shows`);
 });

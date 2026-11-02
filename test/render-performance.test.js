@@ -1475,3 +1475,65 @@ test("syncs zone clouds from drawn frames, not from each render loop wake", () =
   controller.requestMembershipCloudSync(renderer);
   assert.equal(queuedFrames, 1);
 });
+
+test("rebuilds a hidden graph one time when it shows, not at each change", () => {
+  let reportSize = null;
+  const el = {
+    win: {
+      ResizeObserver: function(callback) {
+        reportSize = () => callback([]);
+        return { observe() {}, disconnect() {} };
+      }
+    },
+    ownerDocument: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
+    isConnected: true,
+    clientWidth: 800,
+    clientHeight: 600
+  };
+  const setSize = (width, height) => {
+    el.clientWidth = width;
+    el.clientHeight = height;
+    reportSize();
+  };
+  let nativeRenders = 0;
+  let wakes = 0;
+  const renderer = { nodes: [], links: [], containerEl: el, getHighlightNode: () => null, changed: () => wakes++ };
+  const nativeRender = function() {
+    nativeRenders++;
+    return 5;
+  };
+  const engine = { renderer, options: {}, setQuery() {}, render: nativeRender };
+  const plugin = createPlugin({
+    enginePatches: new WeakMap(),
+    localGraphNodeClickPatches: new WeakMap(),
+    resetButtonPatches: new WeakMap(),
+    filterControls: new WeakMap(),
+    displayControls: new WeakMap(),
+    canvasGraph: { syncSearchMatches() {}, restoreEngine() {} }
+  });
+  plugin.patchGraphEngine(engine);
+
+  setSize(0, 0);
+  engine.render();
+  engine.render();
+  engine.render();
+  assert.equal(nativeRenders, 0, "a hidden graph must not rebuild");
+
+  const wakesBeforeShow = wakes;
+  setSize(800, 600);
+  assert.equal(nativeRenders, 1, "the graph rebuilds one time when it shows");
+  assert.ok(wakes > wakesBeforeShow, "the graph draws its latest layout when it shows");
+
+  assert.equal(engine.render(), 5);
+  assert.equal(nativeRenders, 2, "a visible graph rebuilds at each change");
+  setSize(0, 0);
+  setSize(800, 600);
+  assert.equal(nativeRenders, 2, "a graph with no missed change does not rebuild when it shows");
+
+  plugin.restoreGraphEngine(engine);
+  assert.equal(engine.render, nativeRender);
+  const rendersAfterRestore = nativeRenders;
+  el.clientWidth = 0;
+  engine.render();
+  assert.equal(nativeRenders, rendersAfterRestore + 1, "the restore must remove the visibility gate");
+});
