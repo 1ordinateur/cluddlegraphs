@@ -6,6 +6,9 @@
 // so the graph uses at most about half of the main thread. A hover, pan or zoom without layout
 // motion keeps the native frame rate. Canvas zone cloud syncs follow the drawn frames, but they run
 // in their own frame callback, so this bound does not include their time.
+// A hidden graph draws no frames. The visibility watch must wake the loop when the graph shows.
+
+const { isGraphVisible } = require("./graph-visibility");
 
 const LAYOUT_FRAME_INTERVAL_MS = 1000 / 30;
 // Frame callbacks start on display refresh boundaries, so a frame can start a little early.
@@ -45,7 +48,7 @@ function limitLayoutFrames(renderer) {
 
   limit.onFrame = () => {
     const callback = renderer.renderCallback;
-    if (!callback) {
+    if (!callback || !isGraphVisible(renderer)) {
       renderer.renderTimer = null;
       return;
     }
@@ -77,7 +80,7 @@ function limitLayoutFrames(renderer) {
   // This is a copy of the queueRender of Obsidian 1.14.5, with the limit callback in place of the native
   // frame callback. While the limit is on, a queueRender wrapper from another plugin does not run.
   limit.queueRender = function() {
-    if (!this.renderTimer && this.renderCallback) {
+    if (!this.renderTimer && this.renderCallback && isGraphVisible(this)) {
       this.renderTimer = getRendererWindow(this).requestAnimationFrame(limit.onFrame);
     }
   };

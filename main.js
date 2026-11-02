@@ -18,6 +18,7 @@ const {
   CANVAS_NODE_SHAPE_PROPERTY,
   CANVAS_ZONE_ATTRACTION_PROPERTY
 } = require("./graph-properties");
+const { isGraphVisible, unwatchGraphVisibility, watchGraphVisibility } = require("./graph-visibility");
 const { limitLayoutFrames, restoreLayoutFrames } = require("./layout-frame-limit");
 
 const TARGET_DEPTH = 2;
@@ -375,15 +376,36 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       }
     };
 
+    const patch = { setQuery: originalSetQuery, render: originalRender, renderOwed: false, lastRenderResult: undefined };
     engine.render = function(...args) {
+      // A hidden graph does not rebuild. It rebuilds one time when it shows.
+      if (!isGraphVisible(this.renderer)) {
+        patch.renderOwed = true;
+        // The native timelapse loop continues only while render returns a value, so give the last value.
+        return patch.lastRenderResult;
+      }
+      patch.renderOwed = false;
       plugin.syncCanvasGraphSearchMatches(this);
       const result = originalRender.apply(this, args);
       plugin.syncRendererSearchHighlights(this);
+      patch.lastRenderResult = result;
       return result;
     };
 
-    this.enginePatches.set(engine, { setQuery: originalSetQuery, render: originalRender });
+    this.enginePatches.set(engine, patch);
     this.patchRenderer(engine.renderer);
+    const renderer = engine.renderer;
+    watchGraphVisibility(renderer, () => this.showGraph(engine));
+    // A closed graph view must not stay in memory through the document listener of the watch.
+    engine.view?.register?.(() => unwatchGraphVisibility(renderer));
+  }
+
+  // Rebuild the graph if it missed a change while hidden, and draw its latest layout.
+  showGraph(engine) {
+    if (this.enginePatches.get(engine)?.renderOwed) {
+      engine.render();
+    }
+    engine.renderer?.changed?.();
   }
 
   restoreGraphEngine(engine) {
@@ -399,6 +421,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       engine.render = patch.render;
       this.enginePatches.delete(engine);
     }
+    unwatchGraphVisibility(engine.renderer);
 
     this.restoreGraphResetButton(engine);
     this.canvasGraph.restoreEngine(engine);
@@ -5048,6 +5071,93 @@ module.exports = class CluddleGraphsSettingTab extends PluginSettingTab {
 };
 
 },
+"./src/graph-visibility.js": function(module, exports, require) {
+// A graph updates only while someone can see it. Obsidian hides a tab that is not active with
+// display: none, so the view element has no size. A collapsed sidebar also gives no size, and a
+// minimized window sets the document visibility state to "hidden". A ResizeObserver and the
+// visibilitychange event report each change, so a check in each frame reads a stored state and
+// causes no layout work.
+
+const watches = new WeakMap();
+
+function isElementShown(el) {
+  return el.isConnected !== false
+    && el.clientWidth > 0
+    && el.clientHeight > 0
+    && el.ownerDocument?.visibilityState !== "hidden";
+}
+
+function startWatch(renderer, onShow, visible) {
+  const el = renderer?.containerEl;
+  const win = el?.win ?? el?.ownerDocument?.defaultView;
+  if (!el || watches.has(renderer) || typeof win?.ResizeObserver !== "function") {
+    return;
+  }
+
+  const watch = {
+    doc: el.ownerDocument ?? null,
+    visible: visible ?? isElementShown(el),
+    onShow,
+    observer: null,
+    update: null
+  };
+  watch.update = () => {
+    const shown = isElementShown(el);
+    if (shown === watch.visible) {
+      return;
+    }
+    watch.visible = shown;
+    if (shown) {
+      watch.onShow();
+    }
+  };
+  watch.observer = new win.ResizeObserver(watch.update);
+  watch.observer.observe(el);
+  watch.doc?.addEventListener?.("visibilitychange", watch.update);
+  watches.set(renderer, watch);
+}
+
+function stopWatch(renderer, watch) {
+  watch.observer.disconnect();
+  watch.doc?.removeEventListener?.("visibilitychange", watch.update);
+  watches.delete(renderer);
+}
+
+// Call onShow each time the graph changes from hidden to visible.
+function watchGraphVisibility(renderer, onShow) {
+  startWatch(renderer, onShow);
+}
+
+function unwatchGraphVisibility(renderer) {
+  const watch = renderer ? watches.get(renderer) : undefined;
+  if (watch) {
+    stopWatch(renderer, watch);
+  }
+}
+
+// A graph without a watch counts as visible, so that it never stops by mistake.
+function isGraphVisible(renderer) {
+  const watch = renderer ? watches.get(renderer) : undefined;
+  if (!watch) {
+    return true;
+  }
+
+  if (renderer.containerEl?.ownerDocument !== watch.doc) {
+    // The graph moved to another window. Watch it there, and keep the last state until that window reports a size.
+    stopWatch(renderer, watch);
+    startWatch(renderer, watch.onShow, watch.visible);
+    return watches.get(renderer)?.visible ?? true;
+  }
+  return watch.visible;
+}
+
+module.exports = {
+  isGraphVisible,
+  unwatchGraphVisibility,
+  watchGraphVisibility
+};
+
+},
 "./src/layout-frame-limit.js": function(module, exports, require) {
 // Obsidian's graph worker sends new node positions about 60 times a second while the layout moves.
 // Each message makes the main thread draw the full graph, and the main thread also runs the editor.
@@ -5057,6 +5167,9 @@ module.exports = class CluddleGraphsSettingTab extends PluginSettingTab {
 // so the graph uses at most about half of the main thread. A hover, pan or zoom without layout
 // motion keeps the native frame rate. Canvas zone cloud syncs follow the drawn frames, but they run
 // in their own frame callback, so this bound does not include their time.
+// A hidden graph draws no frames. The visibility watch must wake the loop when the graph shows.
+
+const { isGraphVisible } = require("./graph-visibility");
 
 const LAYOUT_FRAME_INTERVAL_MS = 1000 / 30;
 // Frame callbacks start on display refresh boundaries, so a frame can start a little early.
@@ -5096,7 +5209,7 @@ function limitLayoutFrames(renderer) {
 
   limit.onFrame = () => {
     const callback = renderer.renderCallback;
-    if (!callback) {
+    if (!callback || !isGraphVisible(renderer)) {
       renderer.renderTimer = null;
       return;
     }
@@ -5128,7 +5241,7 @@ function limitLayoutFrames(renderer) {
   // This is a copy of the queueRender of Obsidian 1.14.5, with the limit callback in place of the native
   // frame callback. While the limit is on, a queueRender wrapper from another plugin does not run.
   limit.queueRender = function() {
-    if (!this.renderTimer && this.renderCallback) {
+    if (!this.renderTimer && this.renderCallback && isGraphVisible(this)) {
       this.renderTimer = getRendererWindow(this).requestAnimationFrame(limit.onFrame);
     }
   };

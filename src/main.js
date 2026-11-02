@@ -14,6 +14,7 @@ const {
   CANVAS_NODE_SHAPE_PROPERTY,
   CANVAS_ZONE_ATTRACTION_PROPERTY
 } = require("./graph-properties");
+const { isGraphVisible, unwatchGraphVisibility, watchGraphVisibility } = require("./graph-visibility");
 const { limitLayoutFrames, restoreLayoutFrames } = require("./layout-frame-limit");
 
 const TARGET_DEPTH = 2;
@@ -371,15 +372,36 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       }
     };
 
+    const patch = { setQuery: originalSetQuery, render: originalRender, renderOwed: false, lastRenderResult: undefined };
     engine.render = function(...args) {
+      // A hidden graph does not rebuild. It rebuilds one time when it shows.
+      if (!isGraphVisible(this.renderer)) {
+        patch.renderOwed = true;
+        // The native timelapse loop continues only while render returns a value, so give the last value.
+        return patch.lastRenderResult;
+      }
+      patch.renderOwed = false;
       plugin.syncCanvasGraphSearchMatches(this);
       const result = originalRender.apply(this, args);
       plugin.syncRendererSearchHighlights(this);
+      patch.lastRenderResult = result;
       return result;
     };
 
-    this.enginePatches.set(engine, { setQuery: originalSetQuery, render: originalRender });
+    this.enginePatches.set(engine, patch);
     this.patchRenderer(engine.renderer);
+    const renderer = engine.renderer;
+    watchGraphVisibility(renderer, () => this.showGraph(engine));
+    // A closed graph view must not stay in memory through the document listener of the watch.
+    engine.view?.register?.(() => unwatchGraphVisibility(renderer));
+  }
+
+  // Rebuild the graph if it missed a change while hidden, and draw its latest layout.
+  showGraph(engine) {
+    if (this.enginePatches.get(engine)?.renderOwed) {
+      engine.render();
+    }
+    engine.renderer?.changed?.();
   }
 
   restoreGraphEngine(engine) {
@@ -395,6 +417,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       engine.render = patch.render;
       this.enginePatches.delete(engine);
     }
+    unwatchGraphVisibility(engine.renderer);
 
     this.restoreGraphResetButton(engine);
     this.canvasGraph.restoreEngine(engine);
