@@ -12,9 +12,8 @@ const {
 } = require("./canvas-edge-colors");
 const CluddleGraphsSettingTab = require("./settings");
 const {
+  CANVAS_CLOUDS_ACTIVE_PROPERTY,
   CANVAS_LINK_COLOR_PROPERTY,
-  CANVAS_NODE_COLOR_PROPERTY,
-  CANVAS_NODE_COLOR_SOURCE_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
   CANVAS_NODE_SHAPE_PROPERTY,
   CANVAS_ZONE_ATTRACTION_PROPERTY
@@ -49,7 +48,6 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.rendererPatches = new WeakMap();
     this.nodePatches = new WeakMap();
     this.linkPatches = new WeakMap();
-    this.canvasGraphColorStyleCaches = new WeakMap();
     this.localGraphNodeClickPatches = new WeakMap();
     this.filterControls = new WeakMap();
     this.displayControls = new WeakMap();
@@ -73,6 +71,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   onunload() {
     this.unloaded = true;
     this.canvasEdgeColors?.onunload();
+    this.canvasGraph?.onunload?.();
     for (const timeoutId of this.syncTimeouts) {
       window.clearTimeout(timeoutId);
     }
@@ -194,7 +193,10 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   }
 
   placeSearchHighlightToggle(childrenEl, settingEl) {
-    childrenEl.appendChild(settingEl);
+    // A re-append of the last child still fires DOM mutation observers.
+    if (childrenEl.lastElementChild !== settingEl) {
+      childrenEl.appendChild(settingEl);
+    }
   }
 
   addGraphDisplayColorPicker(engine) {
@@ -608,14 +610,46 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
 
     const ids = this.getCurrentSearchMatchIds(engine);
-    renderer.searchHighlightColor = this.createSearchHighlightColor(engine);
-    renderer.searchHighlightNodeIds = ids;
-    renderer.searchHighlightNodes = new Set(
+    const color = this.createSearchHighlightColor(engine);
+    const nodes = new Set(
       Array.from(ids)
         .map((id) => renderer.nodeLookup?.[id])
         .filter(Boolean)
     );
-    renderer.changed?.();
+    // Each wake makes the native loop draw the full graph for 61 frames, so wake it only for a new highlight.
+    const highlightChanged = !this.isSameSearchHighlight(renderer, nodes, color);
+    renderer.searchHighlightColor = color;
+    renderer.searchHighlightNodeIds = ids;
+    renderer.searchHighlightNodes = nodes;
+    renderer.searchHighlightNeighbors = this.getSearchHighlightNeighbors(renderer, nodes);
+    if (highlightChanged) {
+      renderer.changed?.();
+    }
+  }
+
+  isSameSearchHighlight(renderer, nodes, color) {
+    const previousColor = renderer.searchHighlightColor;
+    const previousNodes = renderer.searchHighlightNodes;
+    return previousColor?.a === color?.a
+      && previousColor?.rgb === color?.rgb
+      && previousNodes?.size === nodes.size
+      && [...nodes].every((node) => previousNodes.has(node));
+  }
+
+  // Map each neighbour to the first highlighted node that links to it, in highlight order.
+  getSearchHighlightNeighbors(renderer, highlights) {
+    const neighbors = new Map();
+    for (const highlighted of highlights) {
+      for (const related of [highlighted.forward, highlighted.reverse]) {
+        for (const id of Object.keys(related ?? {})) {
+          const node = renderer.nodeLookup?.[id];
+          if (node && !neighbors.has(node)) {
+            neighbors.set(node, highlighted);
+          }
+        }
+      }
+    }
+    return neighbors;
   }
 
   getCurrentSearchMatchIds(engine) {
@@ -649,6 +683,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     if (renderer.searchHighlightNodeIds?.size || renderer.searchHighlightNodes?.size || renderer.searchHighlightColor) {
       renderer.searchHighlightNodeIds = new Set();
       renderer.searchHighlightNodes = new Set();
+      renderer.searchHighlightNeighbors = new Map();
       renderer.searchHighlightColor = null;
       renderer.changed?.();
     }
@@ -673,6 +708,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 
     renderer.searchHighlightNodeIds = new Set();
     renderer.searchHighlightNodes = new Set();
+    renderer.searchHighlightNeighbors = new Map();
     renderer.searchHighlightColor = null;
     this.rendererPatches.set(renderer, {});
   }
@@ -714,36 +750,16 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       };
     }
 
-    node.render = function(...args) {
+    // Obsidian calls this for every node in each animation frame. Keep the usual path to the native render.
+    node.render = function() {
       const renderer = this.renderer;
-      const nativeHighlight = renderer.getHighlightNode?.();
-      const searchHighlightNode = nativeHighlight ? null : plugin.getNodeSearchHighlightNode(renderer, this);
-      const renderNode = () => {
-        const result = originalRender.apply(this, args);
-        plugin.drawCanvasGraphNodeShape(this);
-        return result;
-      };
-
-      try {
-        return plugin.renderWithCanvasGraphNodeColor(renderer, this, () => {
-          if (!searchHighlightNode) {
-            return renderNode();
-          }
-
-          const previousHighlightNode = renderer.highlightNode;
-          renderer.highlightNode = searchHighlightNode;
-          try {
-            if (plugin.isSearchHighlightedNode(renderer, this)) {
-              return plugin.renderWithSearchHighlightColor(renderer, renderNode);
-            }
-            return renderNode();
-          } finally {
-            renderer.highlightNode = previousHighlightNode;
-          }
-        });
-      } finally {
+      if (renderer?.[CANVAS_CLOUDS_ACTIVE_PROPERTY]) {
         plugin.canvasGraph.requestMembershipCloudSync(renderer);
       }
+      if (!renderer?.searchHighlightNodes?.size || renderer.getHighlightNode?.()) {
+        return originalRender.apply(this, arguments);
+      }
+      return plugin.renderNodeWithSearchHighlight(renderer, this, originalRender, arguments);
     };
 
     this.nodePatches.set(node, {
@@ -751,6 +767,19 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       initGraphics: originalInitGraphics,
       getDisplayText: originalGetDisplayText
     });
+  }
+
+  renderNodeWithSearchHighlight(renderer, node, originalRender, args) {
+    const previousHighlightNode = renderer.highlightNode;
+    renderer.highlightNode = this.getNodeSearchHighlightNode(renderer, node);
+    try {
+      if (this.isSearchHighlightedNode(renderer, node)) {
+        return this.renderWithSearchHighlightColor(renderer, () => originalRender.apply(node, args));
+      }
+      return originalRender.apply(node, args);
+    } finally {
+      renderer.highlightNode = previousHighlightNode;
+    }
   }
 
   patchGraphLink(link) {
@@ -761,40 +790,57 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const originalRender = link.render;
     const plugin = this;
 
-    link.render = function(...args) {
+    // Obsidian calls this for every link in each animation frame. Keep the usual path to the native render.
+    link.render = function() {
       if (this[CANVAS_ZONE_ATTRACTION_PROPERTY]) {
-        plugin.clearCanvasGraphHiddenLink(this);
+        plugin.hideCanvasGraphLink(this);
         return undefined;
       }
 
       const renderer = this.renderer;
-      const nativeHighlight = renderer.getHighlightNode?.();
-      const highlightedNode = nativeHighlight ? null : plugin.getLinkSearchHighlightNode(renderer, this);
-      const renderLink = () => plugin.renderWithCanvasGraphLinkColor(
-        renderer,
-        this,
-        () => originalRender.apply(this, args)
-      );
-
-      if (!highlightedNode) {
-        return renderLink();
+      const highlightedNode = renderer?.searchHighlightNodes?.size && !renderer.getHighlightNode?.()
+        ? plugin.getLinkSearchHighlightNode(renderer, this)
+        : null;
+      let result;
+      if (highlightedNode) {
+        const previousHighlightNode = renderer.highlightNode;
+        renderer.highlightNode = highlightedNode;
+        try {
+          result = originalRender.apply(this, arguments);
+        } finally {
+          renderer.highlightNode = previousHighlightNode;
+        }
+      } else {
+        result = originalRender.apply(this, arguments);
       }
 
-      const previousHighlightNode = renderer.highlightNode;
-      renderer.highlightNode = highlightedNode;
-      try {
-        return renderLink();
-      } finally {
-        renderer.highlightNode = previousHighlightNode;
-      }
+      plugin.applyCanvasGraphLinkTint(this);
+      return result;
     };
 
     this.linkPatches.set(link, { render: originalRender });
   }
 
-  clearCanvasGraphHiddenLink(link) {
-    for (const item of [link.line, link.arrow, link.path, link.graphics]) {
-      item?.clear?.();
+  // The native render sets these flags again in each frame after the link stops being a hidden zone link.
+  hideCanvasGraphLink(link) {
+    for (const item of [link.line, link.arrow]) {
+      if (item && item.visible !== false) {
+        item.visible = false;
+      }
+    }
+  }
+
+  // The native render moves the tint toward the theme line colour, so write the Canvas colour after it.
+  applyCanvasGraphLinkTint(link) {
+    const color = link[CANVAS_LINK_COLOR_PROPERTY];
+    if (typeof color !== "number") {
+      return;
+    }
+    if (link.line) {
+      link.line.tint = color;
+    }
+    if (link.arrow) {
+      link.arrow.tint = color;
     }
   }
 
@@ -803,14 +849,13 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
-    this.resetCanvasGraphColorStyleCache(renderer);
-
     const rendererPatch = this.rendererPatches.get(renderer);
     if (rendererPatch) {
       delete renderer.isSearchHighlightedNode;
       delete renderer.isSearchRelatedNode;
       delete renderer.searchHighlightNodeIds;
       delete renderer.searchHighlightNodes;
+      delete renderer.searchHighlightNeighbors;
       delete renderer.searchHighlightColor;
       this.rendererPatches.delete(renderer);
     }
@@ -861,27 +906,12 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return node;
     }
 
-    for (const highlighted of renderer.searchHighlightNodes ?? []) {
-      if (node.forward?.hasOwnProperty(highlighted.id) || node.reverse?.hasOwnProperty(highlighted.id)) {
-        return highlighted;
-      }
-    }
-
-    return firstHighlight;
+    return renderer.searchHighlightNeighbors?.get(node) ?? firstHighlight;
   }
 
   isSearchRelatedNode(renderer, node) {
-    if (this.isSearchHighlightedNode(renderer, node)) {
-      return true;
-    }
-
-    for (const highlighted of renderer?.searchHighlightNodes ?? []) {
-      if (node.forward?.hasOwnProperty(highlighted.id) || node.reverse?.hasOwnProperty(highlighted.id)) {
-        return true;
-      }
-    }
-
-    return false;
+    return this.isSearchHighlightedNode(renderer, node)
+      || renderer?.searchHighlightNeighbors?.has(node) === true;
   }
 
   getLinkSearchHighlightNode(renderer, link) {
@@ -915,122 +945,23 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
   }
 
-  renderWithCanvasGraphNodeColor(renderer, node, renderNode) {
-    const color = this.getCanvasGraphNodeRenderColor(renderer, node);
-    const colors = renderer?.colors;
-    if (typeof color !== "number" || !colors?.fill) {
-      return renderNode();
-    }
-
-    const previousNodeColor = node.color;
-    const hadNodeColor = Object.prototype.hasOwnProperty.call(node, "color");
-    const previousFill = colors.fill;
-    node.color = this.getCachedCanvasGraphColorStyle(renderer, previousNodeColor, color, true);
-    colors.fill = this.getCachedCanvasGraphColorStyle(renderer, previousFill, color);
-
-    try {
-      return renderNode();
-    } finally {
-      if (hadNodeColor) {
-        node.color = previousNodeColor;
-      } else {
-        delete node.color;
-      }
-      colors.fill = previousFill;
-    }
-  }
-
-  getCanvasGraphNodeRenderColor(renderer, node) {
-    const explicitColor = node?.[CANVAS_NODE_COLOR_PROPERTY];
-    if (typeof explicitColor === "number") {
-      return explicitColor;
-    }
-
-    const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
-    return this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
-  }
-
-  renderWithCanvasGraphLinkColor(renderer, link, renderLink) {
-    const color = link[CANVAS_LINK_COLOR_PROPERTY];
-    const colors = renderer?.colors;
-    if (typeof color !== "number" || !colors?.line || !colors?.lineHighlight || !colors?.arrow) {
-      return renderLink();
-    }
-
-    const previousLine = colors.line;
-    const previousLineHighlight = colors.lineHighlight;
-    const previousArrow = colors.arrow;
-    colors.line = this.getCachedCanvasGraphColorStyle(renderer, previousLine, color);
-    colors.lineHighlight = this.getCachedCanvasGraphColorStyle(renderer, previousLineHighlight, color);
-    colors.arrow = this.getCachedCanvasGraphColorStyle(renderer, previousArrow, color);
-
-    try {
-      return renderLink();
-    } finally {
-      colors.line = previousLine;
-      colors.lineHighlight = previousLineHighlight;
-      colors.arrow = previousArrow;
-    }
-  }
-
-  getCachedCanvasGraphColorStyle(renderer, baseStyle, color, ensureOpaqueAlpha = false) {
-    this.canvasGraphColorStyleCaches ??= new WeakMap();
-    let rendererCache = this.canvasGraphColorStyleCaches.get(renderer);
-    if (!rendererCache) {
-      rendererCache = {
-        baseStyles: new WeakMap(),
-        emptyStyles: new Map()
-      };
-      this.canvasGraphColorStyleCaches.set(renderer, rendererCache);
-    }
-
-    const isObjectStyle = !!baseStyle && typeof baseStyle === "object";
-    let colorStyles;
-    if (isObjectStyle) {
-      let baseStyleCache = rendererCache.baseStyles.get(baseStyle);
-      if (!baseStyleCache || baseStyleCache.alpha !== baseStyle.a) {
-        baseStyleCache = {
-          alpha: baseStyle.a,
-          colorStyles: new Map()
-        };
-        rendererCache.baseStyles.set(baseStyle, baseStyleCache);
-      }
-      colorStyles = baseStyleCache.colorStyles;
-    } else {
-      colorStyles = rendererCache.emptyStyles;
-    }
-
-    const cacheKey = `${ensureOpaqueAlpha ? "opaque" : "preserve"}:${color}`;
-    let style = colorStyles.get(cacheKey);
-    if (!style) {
-      style = {
-        ...(isObjectStyle ? baseStyle : {}),
-        ...(ensureOpaqueAlpha
-          ? { a: typeof baseStyle?.a === "number" ? baseStyle.a : 1 }
-          : {}),
-        rgb: color
-      };
-      colorStyles.set(cacheKey, style);
-    }
-    return style;
-  }
-
-  resetCanvasGraphColorStyleCache(renderer) {
-    if (renderer) {
-      this.canvasGraphColorStyleCaches?.delete(renderer);
-    }
-  }
-
+  // Draw a shape in white one time for each graphics object. The native render colours it with the tint.
+  // The native initGraphics draws a white circle, so a "circle" shape needs no draw.
+  // Return true when the shape is drawn again.
   drawCanvasGraphNodeShape(node) {
-    const shape = node?.[CANVAS_NODE_SHAPE_PROPERTY];
     const graphics = node?.circle;
-    if (!shape || !graphics || typeof graphics.clear !== "function") {
-      return;
+    if (!graphics || typeof graphics.clear !== "function") {
+      return false;
+    }
+
+    const shape = node[CANVAS_NODE_SHAPE_PROPERTY] || "circle";
+    this.drawnGraphNodeShapes ??= new WeakMap();
+    if ((this.drawnGraphNodeShapes.get(graphics) ?? "circle") === shape) {
+      return false;
     }
 
     graphics.clear();
-    const fillColor = this.getCanvasGraphNodeRenderColor(node.renderer, node);
-    graphics.beginFill?.(typeof fillColor === "number" ? fillColor : 0xffffff, 1);
+    graphics.beginFill?.(0xffffff, 1);
 
     if (shape === "circle") {
       graphics.drawCircle?.(GRAPH_NODE_CENTER, GRAPH_NODE_CENTER, GRAPH_NODE_RADIUS);
@@ -1042,6 +973,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
 
     graphics.endFill?.();
+    this.drawnGraphNodeShapes.set(graphics, shape);
+    return true;
   }
 
   drawRegularGraphPolygon(graphics, sides) {
@@ -1163,9 +1096,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 "./src/canvas-graph.js": function(module, exports, require) {
 const { Setting, TFile, setIcon } = require("obsidian");
 const {
+  CANVAS_CLOUDS_ACTIVE_PROPERTY,
   CANVAS_LINK_COLOR_PROPERTY,
-  CANVAS_NODE_COLOR_PROPERTY,
-  CANVAS_NODE_COLOR_SOURCE_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
   CANVAS_NODE_SHAPE_PROPERTY,
   CANVAS_ZONE_ATTRACTION_PROPERTY
@@ -1233,6 +1165,8 @@ const CANVAS_CLOUD_CORNER_SEGMENTS = 4;
 const CANVAS_CLOUD_CIRCLE_SEGMENTS = 20;
 const CANVAS_RENDER_FADE_MS = 220;
 const CANVAS_ZONE_SETTLE_MS = 180;
+const CANVAS_HYDRATION_DEBOUNCE_MS = 300;
+const CANVAS_HYDRATION_MAX_WAIT_MS = 2000;
 
 const CANVAS_LINK_MODE_LABELS = {
   all: "All links",
@@ -1288,28 +1222,135 @@ module.exports = class CanvasGraphController {
     }
     this.eventsRegistered = true;
 
-    const requestHydration = (file) => {
-      if (this.suppressHydrationRequests) {
-        this.needsHydration = true;
-        return;
+    const app = this.plugin.app;
+    this.plugin.registerEvent(app.vault.on("create", (file) => {
+      if (file instanceof TFile) {
+        this.requestHydrationForPaths([file.path]);
       }
-      if (this.hasOpenGraphView()) {
-        void this.hydrate(file instanceof TFile && file.extension === "canvas" ? file : undefined);
-      } else {
-        this.needsHydration = true;
-      }
-    };
-
-    this.plugin.registerEvent(this.plugin.app.vault.on("create", (file) => {
-      requestHydration(file instanceof TFile && file.extension === "canvas" ? file : undefined);
     }));
-    this.plugin.registerEvent(this.plugin.app.vault.on("modify", (file) => {
+    this.plugin.registerEvent(app.vault.on("modify", (file) => {
       if (file instanceof TFile && file.extension === "canvas") {
-        requestHydration(file);
+        this.requestHydration({ canvasPaths: [file.path] });
       }
     }));
-    this.plugin.registerEvent(this.plugin.app.vault.on("delete", () => requestHydration()));
-    this.plugin.registerEvent(this.plugin.app.vault.on("rename", () => requestHydration()));
+    this.plugin.registerEvent(app.vault.on("delete", (file) => {
+      if (file instanceof TFile) {
+        this.requestHydrationForPaths([file.path]);
+      } else {
+        this.requestHydration();
+      }
+    }));
+    this.plugin.registerEvent(app.vault.on("rename", (file, oldPath) => {
+      if (file instanceof TFile) {
+        this.requestHydrationForPaths([oldPath, file.path]);
+      } else {
+        this.requestHydration();
+      }
+    }));
+    this.plugin.registerEvent(app.workspace.on("css-change", () => {
+      this.clearCanvasColorCache();
+      if (this.hasOpenGraphView()) {
+        this.renderOpenGraphViews();
+      }
+    }));
+  }
+
+  onunload() {
+    if (this.hydrationTimer) {
+      clearTimeout(this.hydrationTimer);
+      this.hydrationTimer = null;
+    }
+    this.hydrationDeadline = null;
+    this.pendingHydration = null;
+    this.unloaded = true;
+  }
+
+  // Reload each Canvas that is a changed vault path or that refers to one.
+  // The reload maps the paths to Canvases when it runs, so that it uses the newest references.
+  requestHydrationForPaths(paths) {
+    const changedPaths = paths.filter((path) => typeof path === "string" && path);
+    if (changedPaths.length > 0) {
+      this.requestHydration({ changedPaths });
+    }
+  }
+
+  // Without a request, reload every Canvas. A request has canvasPaths to reload,
+  // and changedPaths that go to the Canvases that refer to them.
+  requestHydration(request) {
+    if (this.suppressHydrationRequests || !this.hasOpenGraphView()) {
+      if (this.isHydrationRequestRelevant(request)) {
+        this.needsHydration = true;
+      }
+      return;
+    }
+
+    this.queueHydration(request);
+    if (this.hydrationTimer) {
+      clearTimeout(this.hydrationTimer);
+    }
+    // A stream of events cannot stop the reload for more than the maximum wait.
+    const now = Date.now();
+    this.hydrationDeadline ??= now + CANVAS_HYDRATION_MAX_WAIT_MS;
+    const delay = Math.max(0, Math.min(CANVAS_HYDRATION_DEBOUNCE_MS, this.hydrationDeadline - now));
+    this.hydrationTimer = setTimeout(() => {
+      this.hydrationTimer = null;
+      this.hydrationDeadline = null;
+      void this.startHydration();
+    }, delay);
+  }
+
+  // A request that cannot change the Canvas data does not make a full reload necessary later.
+  isHydrationRequestRelevant(request) {
+    return request === undefined
+      || !this.hydrated
+      || Boolean(this.hydration)
+      || this.getHydrationCanvasPaths(request).length > 0;
+  }
+
+  queueHydration(request) {
+    this.pendingHydration ??= { full: false, canvasPaths: new Set(), changedPaths: new Set() };
+    if (request === undefined) {
+      this.pendingHydration.full = true;
+      return;
+    }
+    for (const path of request.canvasPaths ?? []) {
+      this.pendingHydration.canvasPaths.add(path);
+    }
+    for (const path of request.changedPaths ?? []) {
+      this.pendingHydration.changedPaths.add(path);
+    }
+  }
+
+  getHydrationCanvasPaths(request) {
+    const changedPaths = [...(request.changedPaths ?? [])];
+    const canvasPaths = new Set([...(request.canvasPaths ?? []), ...this.getCanvasPathsReferencing(changedPaths)]);
+    for (const path of changedPaths) {
+      if (this.isCanvasPath(path)) {
+        canvasPaths.add(path);
+      }
+    }
+    return [...canvasPaths];
+  }
+
+  getCanvasPathsReferencing(paths) {
+    const targets = new Set(paths.map((path) => this.getCanvasReferenceKey(path)));
+    const canvasPaths = [];
+    for (const [canvasPath, references] of Object.entries(this.canvasReferences ?? {})) {
+      if (references.some((reference) => targets.has(reference))) {
+        canvasPaths.push(canvasPath);
+      }
+    }
+    return canvasPaths;
+  }
+
+  // Obsidian can resolve a link by its file name and without letter case, so match references by the
+  // lower-case file name. A match on a file name in a different folder only causes an extra reload.
+  getCanvasReferenceKey(path) {
+    return String(path).split("/").pop().toLowerCase();
+  }
+
+  isCanvasPath(path) {
+    return String(path).toLowerCase().endsWith(".canvas");
   }
 
   syncEngine(engine) {
@@ -1318,10 +1359,10 @@ module.exports = class CanvasGraphController {
     this.addDisplayControls(engine);
     this.patchRenderer(engine);
 
-    if (!this.hydrated || this.needsHydration) {
-      if (!this.hydrated) {
-        this.markRendererHydrating(engine?.renderer);
-      }
+    if (!this.hydrated) {
+      this.markRendererHydrating(engine?.renderer);
+    }
+    if (!this.hydration && (!this.hydrated || this.needsHydration)) {
       void this.hydrate();
     }
   }
@@ -1704,6 +1745,9 @@ module.exports = class CanvasGraphController {
   setMembershipCloudsOption(engine, enabled) {
     const wasEnabled = this.shouldShowMembershipClouds(engine);
     engine.options[CANVAS_MEMBERSHIP_CLOUDS_OPTION] = enabled;
+    if (engine?.renderer) {
+      engine.renderer[CANVAS_CLOUDS_ACTIVE_PROPERTY] = enabled;
+    }
 
     if (enabled) {
       this.reinitializeMembershipZones(engine);
@@ -1715,9 +1759,9 @@ module.exports = class CanvasGraphController {
     this.clearMembershipClouds(engine?.renderer);
     if (wasEnabled) {
       engine.render?.();
-    } else {
-      engine.renderer?.changed?.();
     }
+    // A rebuild wakes the render loop only for a graph change, so wake it here to remove the old clouds.
+    engine.renderer?.changed?.();
   }
 
   reinitializeMembershipZones(engine) {
@@ -2145,7 +2189,9 @@ module.exports = class CanvasGraphController {
         return originalSetData.call(this, data);
       }
 
+      controller.beginCanvasColorRebuild();
       const canvasLinks = controller.applyCanvasLinksToGraphData(data, engine);
+      controller.applyCanvasCardColors(data, engine);
       const result = originalSetData.call(this, data);
       controller.syncRenderer(engine, canvasLinks);
       controller.revealRendererAfterHydration(this);
@@ -2170,7 +2216,7 @@ module.exports = class CanvasGraphController {
       this.removeOrphanNodes(data);
     }
     if (removedInjectedLinks) {
-      data.numLinks = this.getGraphLinkKeys(data).size;
+      data.numLinks = this.countGraphLinks(data);
     }
   }
 
@@ -2409,16 +2455,49 @@ module.exports = class CanvasGraphController {
       return;
     }
 
-    layer.clear?.();
     const clouds = this.getVisibleCanvasMembershipClouds(renderer);
+    const signature = this.getMembershipCloudSignature(clouds);
+    this.cloudSignatures ??= new WeakMap();
+    if (this.isSameMembershipCloudSignature(this.cloudSignatures.get(layer), signature)) {
+      return;
+    }
+
+    layer.clear?.();
     for (const cloud of clouds) {
       this.drawMembershipCloud(layer, cloud.points, cloud.color, cloud.padding);
     }
+    this.cloudSignatures.set(layer, signature);
   }
 
   clearMembershipClouds(renderer) {
     const layer = renderer ? this.cloudLayers.get(renderer) : null;
     layer?.clear?.();
+    if (layer) {
+      this.cloudSignatures?.delete(layer);
+    }
+  }
+
+  getMembershipCloudSignature(clouds) {
+    const values = [];
+    for (const cloud of clouds) {
+      values.push(cloud.points.length, cloud.color, cloud.padding);
+      for (const point of cloud.points) {
+        values.push(point.x, point.y);
+      }
+    }
+    return values;
+  }
+
+  isSameMembershipCloudSignature(previous, next) {
+    if (!previous || previous.length !== next.length) {
+      return false;
+    }
+    for (let index = 0; index < next.length; index++) {
+      if (previous[index] !== next[index]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   getMembershipCloudLayer(renderer) {
@@ -2465,6 +2544,7 @@ module.exports = class CanvasGraphController {
   }
 
   getVisibleCanvasMembershipClouds(renderer) {
+    const transform = this.getHangerToCloudLayerTransform(renderer, this.cloudLayers.get(renderer));
     const clouds = [];
     for (const [canvasPath, nodeIds] of Object.entries(this.canvasMemberships)) {
       const points = [];
@@ -2477,10 +2557,10 @@ module.exports = class CanvasGraphController {
         seen.add(nodeId);
 
         const node = renderer.nodeLookup?.[nodeId];
-        const point = this.getRendererNodePoint(renderer, node);
+        const point = this.getRendererNodePoint(renderer, node, transform);
         if (point) {
           points.push(point);
-          const radius = this.getRendererNodeRadius(renderer, node);
+          const radius = this.getRendererNodeRadius(renderer, node, transform);
           if (radius !== null) {
             radii.push(radius);
           }
@@ -2501,9 +2581,61 @@ module.exports = class CanvasGraphController {
     return clouds;
   }
 
-  getRendererNodePoint(renderer, node) {
+  // Return the PIXI matrix that maps graph (hanger) coordinates into the cloud layer, from the
+  // current world transforms. This replaces a recursive toGlobal/toLocal call for each node.
+  getHangerToCloudLayerTransform(renderer, layer) {
+    // PIXI updates worldTransform only in a stage render or in toGlobal. A drag-pan moves the hanger
+    // between frames, so update the two transforms one time before they are read.
+    try {
+      renderer?.hanger?.toGlobal?.({ x: 0, y: 0 });
+      layer?.toGlobal?.({ x: 0, y: 0 });
+    } catch {
+      // PIXI destroyed the hanger or the layer. The guarded fallback for each node applies.
+      return null;
+    }
+    const hanger = renderer?.hanger?.worldTransform;
+    const local = layer?.worldTransform;
+    if (!this.isAffineMatrix(hanger) || !this.isAffineMatrix(local)) {
+      return null;
+    }
+
+    const determinant = local.a * local.d - local.b * local.c;
+    if (!Number.isFinite(determinant) || determinant === 0) {
+      return null;
+    }
+
+    const inverse = {
+      a: local.d / determinant,
+      b: -local.b / determinant,
+      c: -local.c / determinant,
+      d: local.a / determinant,
+      tx: (local.c * local.ty - local.d * local.tx) / determinant,
+      ty: (local.b * local.tx - local.a * local.ty) / determinant
+    };
+    return {
+      a: inverse.a * hanger.a + inverse.c * hanger.b,
+      b: inverse.b * hanger.a + inverse.d * hanger.b,
+      c: inverse.a * hanger.c + inverse.c * hanger.d,
+      d: inverse.b * hanger.c + inverse.d * hanger.d,
+      tx: inverse.a * hanger.tx + inverse.c * hanger.ty + inverse.tx,
+      ty: inverse.b * hanger.tx + inverse.d * hanger.ty + inverse.ty
+    };
+  }
+
+  isAffineMatrix(matrix) {
+    return !!matrix && ["a", "b", "c", "d", "tx", "ty"].every((key) => Number.isFinite(matrix[key]));
+  }
+
+  getRendererNodePoint(renderer, node, transform = null) {
     if (!node) {
       return null;
+    }
+
+    if (transform && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+      return {
+        x: transform.a * node.x + transform.c * node.y + transform.tx,
+        y: transform.b * node.x + transform.d * node.y + transform.ty
+      };
     }
 
     const layer = this.cloudLayers.get(renderer);
@@ -2529,9 +2661,15 @@ module.exports = class CanvasGraphController {
     return this.toGraphPoint(node.x, node.y);
   }
 
-  getRendererNodeRadius(renderer, node) {
-    const layer = this.cloudLayers.get(renderer);
+  getRendererNodeRadius(renderer, node, transform = null) {
     const circle = node?.circle;
+    const circleScale = circle?.scale?.x;
+    if (transform && Number.isFinite(circleScale)) {
+      const radius = circleScale * GRAPH_NODE_CENTER * Math.hypot(transform.a, transform.b);
+      return Number.isFinite(radius) && radius > 0 ? radius : null;
+    }
+
+    const layer = this.cloudLayers.get(renderer);
     if (circle && layer && typeof circle.toGlobal === "function" && typeof layer.toLocal === "function") {
       try {
         const center = layer.toLocal(circle.toGlobal({ x: GRAPH_NODE_CENTER, y: GRAPH_NODE_CENTER }));
@@ -2581,24 +2719,59 @@ module.exports = class CanvasGraphController {
       ?? this.plugin.hexToRgb(CANVAS_LINK_COLOR_DEFAULT);
   }
 
-  getCanvasNodeInheritedColor(renderer, canvasPath) {
+  // Set card colours in the graph data. Native setData then copies them to node.color, and the
+  // native render applies them, with hover highlight included.
+  applyCanvasCardColors(data, engine) {
+    if (!this.shouldShowCards(engine)) {
+      return;
+    }
+
+    for (const [nodeId, metadata] of Object.entries(this.canvasGraphNodes)) {
+      const dataNode = data.nodes?.[nodeId];
+      if (!dataNode || metadata.type === "file") {
+        continue;
+      }
+
+      const color = this.getCanvasCardColor(engine, data, metadata);
+      if (color === null) {
+        delete dataNode.color;
+      } else {
+        dataNode.color = this.getCanvasCardColorStyle(color);
+      }
+    }
+  }
+
+  getCanvasCardColor(engine, data, metadata) {
+    const ownColor = this.shouldInheritCardColors(engine)
+      ? this.getCanvasGraphNodeMetadataColor(engine, metadata)
+      : this.getGraphGroupColorForPath(engine, metadata.canvasPath);
+    return ownColor ?? this.getCanvasNodeInheritedColor(engine, data, metadata.canvasPath);
+  }
+
+  // Native setData compares node colours by identity, so reuse one style object for each colour.
+  getCanvasCardColorStyle(color) {
+    this.canvasCardColorStyles ??= new Map();
+    let style = this.canvasCardColorStyles.get(color);
+    if (!style) {
+      style = { a: 1, rgb: color };
+      this.canvasCardColorStyles.set(color, style);
+    }
+    return style;
+  }
+
+  getCanvasNodeInheritedColor(engine, data, canvasPath) {
     if (!canvasPath) {
       return null;
     }
 
-    const engine = this.rendererEngines.get(renderer);
-    return this.getGraphNodeColor(renderer?.nodeLookup?.[canvasPath])
-      ?? this.toRgbNumber(engine?.fileFilter?.[canvasPath])
-      ?? this.getGraphGroupColorForPath(engine, canvasPath)
-      ?? this.getGraphRendererColor(renderer, "fill");
+    return this.toRgbNumber(data?.nodes?.[canvasPath]?.color)
+      ?? this.getGraphGroupColorForPath(engine, canvasPath);
   }
 
-  getCanvasGraphNodeMetadataColor(engine, metadata, canvasColorCache) {
-    const doc = engine?.renderer?.containerEl?.ownerDocument
-      ?? engine?.renderer?.containerEl?.doc
-      ?? globalThis.document;
+  getCanvasGraphNodeMetadataColor(engine, metadata) {
+    const doc = this.getRendererDocument(engine?.renderer);
     for (const color of [metadata?.canvasColor, metadata?.inheritedColor]) {
-      const resolvedColor = this.resolveCanvasColorCached(color, doc, canvasColorCache);
+      const resolvedColor = this.resolveCanvasColorCached(color, doc);
       if (resolvedColor !== null) {
         return resolvedColor;
       }
@@ -2606,19 +2779,61 @@ module.exports = class CanvasGraphController {
     return null;
   }
 
-  resolveCanvasColorCached(color, doc, canvasColorCache) {
+  getRendererDocument(renderer) {
+    return renderer?.containerEl?.ownerDocument
+      ?? renderer?.containerEl?.doc
+      ?? globalThis.document;
+  }
+
+  // Keep resolved palette colours across graph rebuilds. A css-change event clears them.
+  // Keep an unresolved colour only until the next graph rebuild, so that a palette that loads later still resolves.
+  resolveCanvasColorCached(color, doc) {
     if (color === undefined || color === null || color === "") {
       return null;
     }
+    if (!doc || typeof doc !== "object") {
+      return this.resolveCanvasColor(color, doc);
+    }
 
-    const key = `${typeof color}:${String(color)}`;
-    if (canvasColorCache?.has(key)) {
-      return canvasColorCache.get(key);
+    this.canvasColorCache ??= new WeakMap();
+    let documentCache = this.canvasColorCache.get(doc);
+    if (!documentCache) {
+      documentCache = new Map();
+      this.canvasColorCache.set(doc, documentCache);
+    }
+
+    const key = String(color);
+    if (documentCache.has(key)) {
+      return documentCache.get(key);
+    }
+
+    this.unresolvedCanvasColors ??= new WeakMap();
+    let unresolvedColors = this.unresolvedCanvasColors.get(doc);
+    if (!unresolvedColors) {
+      unresolvedColors = new Set();
+      this.unresolvedCanvasColors.set(doc, unresolvedColors);
+    }
+    if (unresolvedColors.has(key)) {
+      return null;
     }
 
     const resolvedColor = this.resolveCanvasColor(color, doc);
-    canvasColorCache?.set(key, resolvedColor);
+    if (resolvedColor === null) {
+      unresolvedColors.add(key);
+    } else {
+      documentCache.set(key, resolvedColor);
+    }
     return resolvedColor;
+  }
+
+  // Look up the unresolved palette colours again in the next graph rebuild.
+  beginCanvasColorRebuild() {
+    this.unresolvedCanvasColors = new WeakMap();
+  }
+
+  clearCanvasColorCache() {
+    this.canvasColorCache = new WeakMap();
+    this.beginCanvasColorRebuild();
   }
 
   cacheGraphColorQueries(engine, queries) {
@@ -3011,17 +3226,16 @@ module.exports = class CanvasGraphController {
         this.removeOrphanNodes(data);
       }
       if (removedInjectedLinks || removedNativeParentLinks) {
-        data.numLinks = this.getGraphLinkKeys(data).size;
+        data.numLinks = this.countGraphLinks(data);
       }
       return {};
     }
 
-    const nativeLinks = this.getGraphLinkKeys(data);
     const canvasLinks = this.getCanvasGraphLinks(data, engine);
     const injectedLinkKeys = new Set();
 
     if (mode !== "hide") {
-      for (const linkKey of this.addCanvasGraphLinks(data, engine, canvasLinks, nativeLinks)) {
+      for (const linkKey of this.addCanvasGraphLinks(data, engine, canvasLinks)) {
         injectedLinkKeys.add(linkKey);
       }
       this.addCanvasSearchResultNodes(data, engine);
@@ -3043,7 +3257,7 @@ module.exports = class CanvasGraphController {
     if (injectedLinkKeys.size > 0) {
       this.injectedCanvasLinkKeys.set(engine, injectedLinkKeys);
     }
-    data.numLinks = this.getGraphLinkKeys(data).size;
+    data.numLinks = this.countGraphLinks(data);
     return canvasLinks;
   }
 
@@ -3092,15 +3306,19 @@ module.exports = class CanvasGraphController {
       return;
     }
 
-    this.plugin.resetCanvasGraphColorStyleCache?.(renderer);
     const defaultColor = this.plugin.hexToRgb(this.getLinkColor(engine));
-    const doc = renderer.containerEl?.ownerDocument ?? renderer.containerEl?.doc ?? globalThis.document;
-    const canvasColorCache = new Map();
+    const doc = this.getRendererDocument(renderer);
+    renderer[CANVAS_CLOUDS_ACTIVE_PROPERTY] = this.shouldShowMembershipClouds(engine);
 
+    let visibleChange = false;
     for (const node of renderer.nodes ?? []) {
-      this.syncNode(engine, node, canvasColorCache);
+      if (this.syncNode(engine, node)) {
+        visibleChange = true;
+      }
       this.plugin.patchGraphNode(node);
-      this.plugin.drawCanvasGraphNodeShape(node);
+      if (this.plugin.drawCanvasGraphNodeShape(node)) {
+        visibleChange = true;
+      }
     }
 
     const zoneAttractionLinkKeys = this.zoneAttractionLinkKeys.get(engine);
@@ -3109,15 +3327,20 @@ module.exports = class CanvasGraphController {
       for (const link of renderer.links ?? []) {
         const linkKey = this.getLinkKey(link.source?.id, link.target?.id);
         const canvasLink = canvasLinks[linkKey];
-        if (zoneAttractionLinkKeys?.has(linkKey)) {
-          link[CANVAS_ZONE_ATTRACTION_PROPERTY] = true;
-          delete link[CANVAS_LINK_COLOR_PROPERTY];
-        } else if (canvasLink) {
-          delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
-          link[CANVAS_LINK_COLOR_PROPERTY] = this.getRenderedLinkColor(canvasLink, defaultColor, doc);
-        } else {
-          delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
-          delete link[CANVAS_LINK_COLOR_PROPERTY];
+        const zone = zoneAttractionLinkKeys?.has(linkKey) === true;
+        const color = !zone && canvasLink ? this.getRenderedLinkColor(canvasLink, defaultColor, doc) : undefined;
+        if ((link[CANVAS_ZONE_ATTRACTION_PROPERTY] === true) !== zone || link[CANVAS_LINK_COLOR_PROPERTY] !== color) {
+          visibleChange = true;
+          if (zone) {
+            link[CANVAS_ZONE_ATTRACTION_PROPERTY] = true;
+          } else {
+            delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
+          }
+          if (color === undefined) {
+            delete link[CANVAS_LINK_COLOR_PROPERTY];
+          } else {
+            link[CANVAS_LINK_COLOR_PROPERTY] = color;
+          }
         }
         this.plugin.patchGraphLink(link);
       }
@@ -3129,117 +3352,248 @@ module.exports = class CanvasGraphController {
     }
 
     this.requestMembershipCloudSync(renderer);
-    this.requestRendererVisualRefresh(renderer);
+    // Native setData wakes the render loop for its own changes. Each wake draws the full graph for
+    // 61 frames, also in a hidden tab, so wake it here only for a change that the plugin made.
+    if (visibleChange) {
+      this.requestRendererVisualRefresh(renderer);
+    }
   }
 
-  syncNode(engine, node, canvasColorCache = new Map()) {
+  // Card colours go into the graph data (applyCanvasCardColors). Here, set only the label and the shape.
+  // Return true when the label or its font changes. drawCanvasGraphNodeShape reports a shape change.
+  syncNode(engine, node) {
     const metadata = this.canvasGraphNodes[node?.id];
     if (!metadata || (metadata.type !== "file" && !this.shouldShowCards(engine))) {
+      const hadLabel = node?.[CANVAS_NODE_LABEL_PROPERTY] !== undefined;
       delete node?.[CANVAS_NODE_LABEL_PROPERTY];
-      delete node?.[CANVAS_NODE_COLOR_PROPERTY];
-      delete node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
       if (node?.[CANVAS_NODE_SHAPE_PROPERTY]) {
         node[CANVAS_NODE_SHAPE_PROPERTY] = "circle";
       }
-      return;
+      return hadLabel;
     }
 
-    node[CANVAS_NODE_LABEL_PROPERTY] = metadata.type === "file" ? undefined : metadata.label;
+    const label = metadata.type === "file" ? undefined : metadata.label;
+    const size = node.getSize?.();
+    this.labelSizes ??= new WeakMap();
+    const fontChanged = node[CANVAS_NODE_LABEL_PROPERTY] !== label || this.labelSizes.get(node) !== size;
+    node[CANVAS_NODE_LABEL_PROPERTY] = label;
+    this.labelSizes.set(node, size);
     node[CANVAS_NODE_SHAPE_PROPERTY] = this.getNodeShape(engine, metadata.type);
-    if (metadata.type !== "file" && this.shouldInheritCardColors(engine)) {
-      const color = this.getCanvasGraphNodeMetadataColor(engine, metadata, canvasColorCache);
-      if (color !== null) {
-        node[CANVAS_NODE_COLOR_PROPERTY] = color;
-        delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
-      } else {
-        node[CANVAS_NODE_COLOR_SOURCE_PROPERTY] = metadata.canvasPath;
-        delete node[CANVAS_NODE_COLOR_PROPERTY];
-      }
-    } else if (metadata.type !== "file") {
-      const color = this.getGraphGroupColorForPath(engine, metadata.canvasPath)
-        ?? this.getCanvasNodeInheritedColor(engine?.renderer, metadata.canvasPath);
-      delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
-      if (color !== null) {
-        node[CANVAS_NODE_COLOR_PROPERTY] = color;
-      } else {
-        delete node[CANVAS_NODE_COLOR_PROPERTY];
-      }
-    } else {
-      delete node[CANVAS_NODE_COLOR_PROPERTY];
-      delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
+    let textChanged = false;
+    if (node.text && label !== undefined && node.text.text !== label) {
+      node.text.text = label;
+      textChanged = true;
     }
-    if (node.text && metadata.type !== "file") {
-      node.text.text = metadata.label;
+    // A dirty font makes PIXI draw the label text again. The native font size uses the node size,
+    // so set it only for a new label or a new node size.
+    if (fontChanged) {
+      node.fontDirty = true;
     }
-    node.fontDirty = true;
+    return fontChanged || textChanged;
   }
 
   clearRendererMetadata(renderer) {
     for (const node of renderer?.nodes ?? []) {
-      delete node[CANVAS_NODE_COLOR_PROPERTY];
-      delete node[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
       delete node[CANVAS_NODE_LABEL_PROPERTY];
       delete node[CANVAS_NODE_SHAPE_PROPERTY];
+      this.plugin.drawCanvasGraphNodeShape?.(node);
     }
     for (const link of renderer?.links ?? []) {
       delete link[CANVAS_ZONE_ATTRACTION_PROPERTY];
       delete link[CANVAS_LINK_COLOR_PROPERTY];
     }
+    if (renderer) {
+      delete renderer[CANVAS_CLOUDS_ACTIVE_PROPERTY];
+    }
     renderer?.changed?.();
   }
 
-  async hydrate(file) {
-    if (this.hydration) {
-      this.needsHydration = true;
-      return this.hydration;
-    }
-
-    this.needsHydration = false;
-    this.hydration = this.loadCanvasGraphData(file)
-      .finally(async () => {
-        this.hydration = null;
-        if (!this.needsHydration) {
-          return;
-        }
-
-        this.needsHydration = false;
-        await this.hydrate();
-      });
-
-    return this.hydration;
+  // Reload Canvas data now. Without a request, reload every Canvas.
+  hydrate(request) {
+    this.queueHydration(request);
+    return this.startHydration();
   }
 
-  async loadCanvasGraphData(file) {
-    const links = file ? { ...this.canvasGraphLinks } : {};
-    const nodes = file ? this.removeNodesForCanvas({ ...this.canvasGraphNodes }, file.path) : {};
-    const memberships = file ? { ...this.canvasMemberships } : {};
-    if (file) {
-      delete links[file.path];
-      delete memberships[file.path];
-    }
-
-    const canvasFiles = file
-      ? [file]
-      : this.plugin.app.vault.getFiles().filter((vaultFile) => vaultFile.extension === "canvas");
-
-    for (const canvasFile of canvasFiles) {
-      try {
-        const source = await this.plugin.app.vault.cachedRead(canvasFile);
-        const graphData = this.parseCanvasGraphData(canvasFile.path, source);
-        links[canvasFile.path] = graphData.links;
-        memberships[canvasFile.path] = graphData.memberships;
-        Object.assign(nodes, graphData.nodes);
-      } catch (error) {
-        console.error("Cluddle Graphs: failed to read canvas graph data", canvasFile.path, error);
+  startHydration() {
+    if (!this.hydration && this.pendingHydration) {
+      const hydration = this.drainHydration();
+      // A drain that ends before its first await has already run its finally block. Do not keep its promise.
+      if (this.hydrationRunning) {
+        this.hydration = hydration;
       }
     }
+    return this.hydration ?? Promise.resolve();
+  }
 
-    this.canvasGraphLinks = links;
-    this.invalidateCanvasGraphLinkCache();
-    this.canvasGraphNodes = nodes;
-    this.canvasMemberships = memberships;
+  // Run queued reloads one at a time. The finally block clears the promise in the same turn as the
+  // last queue check, so a request cannot stay in the queue without a run.
+  async drainHydration() {
+    this.hydrationRunning = true;
+    let failed = false;
+    try {
+      for (;;) {
+        if (this.unloaded) {
+          return;
+        }
+        if (!this.pendingHydration && !failed && this.needsHydration && this.canRunOwedHydration()) {
+          this.queueHydration();
+        }
+        const pending = this.pendingHydration;
+        if (!pending) {
+          return;
+        }
+        this.pendingHydration = null;
+
+        const full = pending.full || !this.hydrated;
+        const canvasPaths = full ? undefined : this.getHydrationCanvasPaths(pending);
+        if (canvasPaths?.length === 0) {
+          continue;
+        }
+        if (full) {
+          this.needsHydration = false;
+        }
+        try {
+          await this.loadCanvasGraphData(canvasPaths);
+        } catch (error) {
+          // Do not try again in this drain. The next request or graph sync tries a full reload.
+          failed = true;
+          this.needsHydration = true;
+          console.error("Cluddle Graphs: failed to load canvas graph data", error);
+        }
+      }
+    } finally {
+      this.hydrationRunning = false;
+      this.hydration = null;
+    }
+  }
+
+  // A request that came while no graph was open needs a full reload when a graph is open again.
+  canRunOwedHydration() {
+    return !this.suppressHydrationRequests && this.hasOpenGraphView();
+  }
+
+  // Without paths, reload every Canvas.
+  async loadCanvasGraphData(paths) {
+    const vault = this.plugin.app.vault;
+    const full = paths === undefined;
+    const wasHydrated = this.hydrated;
+    const previousSignatures = this.canvasSignatures ?? {};
+    const canvasPaths = full
+      ? vault.getFiles().filter((vaultFile) => vaultFile.extension === "canvas").map((vaultFile) => vaultFile.path)
+      : [...new Set(paths)];
+    // Keep the nodes of each Canvas apart, so that a partial reload can merge them again.
+    const state = {
+      links: full ? {} : { ...this.canvasGraphLinks },
+      memberships: full ? {} : { ...this.canvasMemberships },
+      references: full ? {} : { ...(this.canvasReferences ?? {}) },
+      signatures: full ? {} : { ...previousSignatures },
+      nodeMaps: full ? {} : { ...(this.canvasNodeMaps ?? {}) }
+    };
+
+    for (const canvasPath of canvasPaths) {
+      if (this.unloaded) {
+        return;
+      }
+      let entries;
+      try {
+        entries = await this.readCanvasEntries(canvasPath);
+      } catch (error) {
+        // Keep the loaded data of this Canvas. Its next modify event reads it again.
+        console.error("Cluddle Graphs: failed to read canvas graph data", canvasPath, error);
+        entries = this.getLoadedCanvasEntries(canvasPath);
+      }
+      this.setCanvasEntries(state, canvasPath, entries);
+    }
+
+    if (this.unloaded) {
+      return;
+    }
+    this.canvasReferences = state.references;
     this.hydrated = true;
+    if (wasHydrated && !this.hasCanvasSignatureChange(previousSignatures, state.signatures)) {
+      return;
+    }
+
+    this.canvasGraphLinks = state.links;
+    this.invalidateCanvasGraphLinkCache();
+    this.canvasNodeMaps = state.nodeMaps;
+    this.canvasGraphNodes = this.mergeCanvasNodeMaps(state.nodeMaps);
+    this.canvasMemberships = state.memberships;
+    this.canvasSignatures = state.signatures;
     this.renderOpenGraphViews();
+  }
+
+  // Return the parsed entries of one Canvas, or null when the path is not a Canvas file.
+  async readCanvasEntries(canvasPath) {
+    const vault = this.plugin.app.vault;
+    const canvasFile = vault.getAbstractFileByPath(canvasPath);
+    if (!(canvasFile instanceof TFile) || canvasFile.extension !== "canvas") {
+      return null;
+    }
+
+    const graphData = this.parseCanvasGraphData(canvasPath, await vault.cachedRead(canvasFile));
+    return {
+      links: graphData.links,
+      memberships: graphData.memberships,
+      references: graphData.references,
+      signature: this.getCanvasGraphDataSignature(graphData),
+      nodes: graphData.nodes
+    };
+  }
+
+  // Return the loaded entries of one Canvas, or null when no data of that Canvas is loaded.
+  getLoadedCanvasEntries(canvasPath) {
+    if (!Object.hasOwn(this.canvasSignatures ?? {}, canvasPath)) {
+      return null;
+    }
+    return {
+      links: this.canvasGraphLinks[canvasPath],
+      memberships: this.canvasMemberships[canvasPath],
+      references: this.canvasReferences?.[canvasPath] ?? [],
+      signature: this.canvasSignatures[canvasPath],
+      nodes: this.canvasNodeMaps?.[canvasPath] ?? {}
+    };
+  }
+
+  // Without entries, remove the Canvas.
+  setCanvasEntries(state, canvasPath, entries) {
+    if (!entries) {
+      delete state.links[canvasPath];
+      delete state.memberships[canvasPath];
+      delete state.references[canvasPath];
+      delete state.signatures[canvasPath];
+      delete state.nodeMaps[canvasPath];
+      return;
+    }
+    state.links[canvasPath] = entries.links;
+    state.memberships[canvasPath] = entries.memberships;
+    state.references[canvasPath] = entries.references;
+    state.signatures[canvasPath] = entries.signature;
+    state.nodeMaps[canvasPath] = entries.nodes;
+  }
+
+  // Merge in Canvas path order, so that a node that two Canvases share does not depend on the reload history.
+  mergeCanvasNodeMaps(nodeMaps) {
+    const nodes = {};
+    for (const canvasPath of Object.keys(nodeMaps).sort()) {
+      Object.assign(nodes, nodeMaps[canvasPath]);
+    }
+    return nodes;
+  }
+
+  // The signature holds only the parsed graph output, so a move that keeps the group memberships is not a change.
+  getCanvasGraphDataSignature(graphData) {
+    return JSON.stringify([graphData.links, graphData.nodes, graphData.memberships]);
+  }
+
+  hasCanvasSignatureChange(previous, next) {
+    const canvasPaths = new Set([...Object.keys(previous), ...Object.keys(next)]);
+    for (const canvasPath of canvasPaths) {
+      if (previous[canvasPath] !== next[canvasPath]) {
+        return true;
+      }
+    }
+    return false;
   }
 
   parseCanvasGraphData(canvasPath, source) {
@@ -3247,21 +3601,30 @@ module.exports = class CanvasGraphController {
     try {
       data = JSON.parse(source);
     } catch {
-      return { links: {}, nodes: {}, memberships: [] };
+      return { links: {}, nodes: {}, memberships: [], references: [] };
     }
 
     const rawNodes = Array.isArray(data.nodes) ? data.nodes : [];
+    // Keep the raw and resolved paths of file nodes as reference keys, so that a change to one of
+    // these paths reloads this Canvas.
+    const references = new Set();
     const groupMembership = this.getCanvasGroupMembership(data);
     const parentGroupByNodeId = this.getCanvasParentGroupByNodeId(groupMembership);
     const inheritedGroupColors = this.getCanvasInheritedGroupColors(rawNodes, parentGroupByNodeId);
     const canvasNode = this.toCanvasFileGraphNode(canvasPath);
     const graphNodes = new Map();
     for (const node of rawNodes) {
+      if (node?.type === "file" && typeof node.file === "string" && node.file) {
+        references.add(this.getCanvasReferenceKey(node.file));
+      }
       const graphNode = this.toCanvasGraphNode(canvasPath, node, {
         inheritedColor: this.getCanvasParentGroupColor(node.id, parentGroupByNodeId, inheritedGroupColors)
       });
       if (graphNode) {
         graphNodes.set(node.id, graphNode);
+        if (graphNode.type === "file") {
+          references.add(this.getCanvasReferenceKey(graphNode.id));
+        }
       }
     }
 
@@ -3312,7 +3675,7 @@ module.exports = class CanvasGraphController {
       }
     }
 
-    return { links, nodes, memberships: [...memberships] };
+    return { links, nodes, memberships: [...memberships], references: [...references] };
   }
 
   addCanvasGraphLink(links, sourceId, targetId, options = {}) {
@@ -3661,20 +4024,21 @@ module.exports = class CanvasGraphController {
     return `${canvasPath}#${CANVAS_GRAPH_ONLY_NODE_PREFIX}-${nodeId}`;
   }
 
-  removeNodesForCanvas(nodes, canvasPath) {
-    for (const [nodeId, node] of Object.entries(nodes)) {
-      if (node.canvasPath === canvasPath) {
-        delete nodes[nodeId];
-      }
-    }
-    return nodes;
-  }
-
   getCanvasGraphLinks(data, engine) {
+    // The engine state does not change in one rebuild, so check each path one time.
+    const allowedPaths = new Map();
+    const isAllowed = (path) => {
+      let allowed = allowedPaths.get(path);
+      if (allowed === undefined) {
+        allowed = this.shouldAllowGraphNode(engine, path);
+        allowedPaths.set(path, allowed);
+      }
+      return allowed;
+    };
+
     const links = {};
     for (const [key, link] of Object.entries(this.getCanvasGraphLinkProjection(engine))) {
-      if (!this.shouldAllowGraphNode(engine, link.sourcePath)
-        || !this.shouldAllowGraphNode(engine, link.targetPath)) {
+      if (!isAllowed(link.sourcePath) || !isAllowed(link.targetPath)) {
         continue;
       }
 
@@ -3946,7 +4310,9 @@ module.exports = class CanvasGraphController {
     }
   }
 
-  addCanvasGraphLinks(data, engine, canvasLinks, nativeLinks = new Set()) {
+  // A link that the source node has before this call is a native link. Each Canvas link key is unique,
+  // so this check gives the same result as a set of the native link keys, with no key for each native link.
+  addCanvasGraphLinks(data, engine, canvasLinks) {
     const injectedLinkKeys = new Set();
     for (const link of Object.values(canvasLinks)) {
       this.ensureGraphNode(data, engine, link.sourcePath);
@@ -3958,10 +4324,10 @@ module.exports = class CanvasGraphController {
       }
 
       sourceNode.links ??= {};
+      const isNativeLink = Object.hasOwn(sourceNode.links, link.targetPath);
       sourceNode.links[link.targetPath] = true;
-      const linkKey = this.getLinkKey(link.sourcePath, link.targetPath);
-      if (!nativeLinks.has(linkKey)) {
-        injectedLinkKeys.add(linkKey);
+      if (!isNativeLink) {
+        injectedLinkKeys.add(this.getLinkKey(link.sourcePath, link.targetPath));
       }
     }
     return injectedLinkKeys;
@@ -4001,11 +4367,22 @@ module.exports = class CanvasGraphController {
   }
 
   keepOnlyCanvasGraphLinks(data, canvasLinks) {
-    const canvasLinkKeys = new Set(Object.keys(canvasLinks));
+    // Index the targets by source, so that the check makes no key string for each graph link.
+    const targetsBySource = new Map();
+    for (const link of Object.values(canvasLinks)) {
+      let targets = targetsBySource.get(link.sourcePath);
+      if (!targets) {
+        targets = new Set();
+        targetsBySource.set(link.sourcePath, targets);
+      }
+      targets.add(link.targetPath);
+    }
+
     for (const [sourcePath, node] of Object.entries(data.nodes)) {
+      const targets = targetsBySource.get(sourcePath);
       for (const targetPath of Object.keys(node.links ?? {})) {
-        if (!canvasLinkKeys.has(this.getLinkKey(sourcePath, targetPath))) {
-          delete node.links?.[targetPath];
+        if (!targets?.has(targetPath)) {
+          delete node.links[targetPath];
         }
       }
     }
@@ -4030,6 +4407,15 @@ module.exports = class CanvasGraphController {
     }
   }
 
+  // The link keys of one node are unique, so this count equals the size of getGraphLinkKeys(data).
+  countGraphLinks(data) {
+    let count = 0;
+    for (const node of Object.values(data.nodes ?? {})) {
+      count += Object.keys(node.links ?? {}).length;
+    }
+    return count;
+  }
+
   getGraphLinkKeys(data) {
     const links = new Set();
     for (const [sourcePath, node] of Object.entries(data.nodes ?? {})) {
@@ -4042,7 +4428,7 @@ module.exports = class CanvasGraphController {
 
   getRenderedLinkColor(link, defaultColor, doc) {
     for (const canvasColor of link.colors) {
-      const resolvedColor = this.resolveCanvasColor(canvasColor, doc);
+      const resolvedColor = this.resolveCanvasColorCached(canvasColor, doc);
       if (resolvedColor !== null) {
         return resolvedColor;
       }
@@ -4221,8 +4607,9 @@ module.exports = class CanvasGraphController {
   }
 
   isAttachmentPath(path) {
-    const extension = String(path).split(".").pop()?.toLowerCase();
-    return extension !== "md";
+    const text = String(path);
+    const extension = text.slice(text.lastIndexOf(".") + 1);
+    return extension.length !== 2 || extension.toLowerCase() !== "md";
   }
 
   getLinkKey(sourcePath, targetPath) {
@@ -4252,9 +4639,8 @@ module.exports = class CanvasGraphController {
 },
 "./src/graph-properties.js": function(module, exports, require) {
 module.exports = {
+  CANVAS_CLOUDS_ACTIVE_PROPERTY: "__cluddlegraphsCanvasCloudsActive",
   CANVAS_LINK_COLOR_PROPERTY: "__cluddlegraphsCanvasLinkColor",
-  CANVAS_NODE_COLOR_PROPERTY: "__cluddlegraphsCanvasNodeColor",
-  CANVAS_NODE_COLOR_SOURCE_PROPERTY: "__cluddlegraphsCanvasNodeColorSource",
   CANVAS_NODE_LABEL_PROPERTY: "__cluddlegraphsCanvasNodeLabel",
   CANVAS_NODE_SHAPE_PROPERTY: "__cluddlegraphsCanvasNodeShape",
   CANVAS_ZONE_ATTRACTION_PROPERTY: "__cluddlegraphsCanvasZoneAttraction"

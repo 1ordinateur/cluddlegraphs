@@ -8,9 +8,8 @@ const {
 } = require("./canvas-edge-colors");
 const CluddleGraphsSettingTab = require("./settings");
 const {
+  CANVAS_CLOUDS_ACTIVE_PROPERTY,
   CANVAS_LINK_COLOR_PROPERTY,
-  CANVAS_NODE_COLOR_PROPERTY,
-  CANVAS_NODE_COLOR_SOURCE_PROPERTY,
   CANVAS_NODE_LABEL_PROPERTY,
   CANVAS_NODE_SHAPE_PROPERTY,
   CANVAS_ZONE_ATTRACTION_PROPERTY
@@ -45,7 +44,6 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     this.rendererPatches = new WeakMap();
     this.nodePatches = new WeakMap();
     this.linkPatches = new WeakMap();
-    this.canvasGraphColorStyleCaches = new WeakMap();
     this.localGraphNodeClickPatches = new WeakMap();
     this.filterControls = new WeakMap();
     this.displayControls = new WeakMap();
@@ -69,6 +67,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   onunload() {
     this.unloaded = true;
     this.canvasEdgeColors?.onunload();
+    this.canvasGraph?.onunload?.();
     for (const timeoutId of this.syncTimeouts) {
       window.clearTimeout(timeoutId);
     }
@@ -190,7 +189,10 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
   }
 
   placeSearchHighlightToggle(childrenEl, settingEl) {
-    childrenEl.appendChild(settingEl);
+    // A re-append of the last child still fires DOM mutation observers.
+    if (childrenEl.lastElementChild !== settingEl) {
+      childrenEl.appendChild(settingEl);
+    }
   }
 
   addGraphDisplayColorPicker(engine) {
@@ -604,14 +606,46 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
 
     const ids = this.getCurrentSearchMatchIds(engine);
-    renderer.searchHighlightColor = this.createSearchHighlightColor(engine);
-    renderer.searchHighlightNodeIds = ids;
-    renderer.searchHighlightNodes = new Set(
+    const color = this.createSearchHighlightColor(engine);
+    const nodes = new Set(
       Array.from(ids)
         .map((id) => renderer.nodeLookup?.[id])
         .filter(Boolean)
     );
-    renderer.changed?.();
+    // Each wake makes the native loop draw the full graph for 61 frames, so wake it only for a new highlight.
+    const highlightChanged = !this.isSameSearchHighlight(renderer, nodes, color);
+    renderer.searchHighlightColor = color;
+    renderer.searchHighlightNodeIds = ids;
+    renderer.searchHighlightNodes = nodes;
+    renderer.searchHighlightNeighbors = this.getSearchHighlightNeighbors(renderer, nodes);
+    if (highlightChanged) {
+      renderer.changed?.();
+    }
+  }
+
+  isSameSearchHighlight(renderer, nodes, color) {
+    const previousColor = renderer.searchHighlightColor;
+    const previousNodes = renderer.searchHighlightNodes;
+    return previousColor?.a === color?.a
+      && previousColor?.rgb === color?.rgb
+      && previousNodes?.size === nodes.size
+      && [...nodes].every((node) => previousNodes.has(node));
+  }
+
+  // Map each neighbour to the first highlighted node that links to it, in highlight order.
+  getSearchHighlightNeighbors(renderer, highlights) {
+    const neighbors = new Map();
+    for (const highlighted of highlights) {
+      for (const related of [highlighted.forward, highlighted.reverse]) {
+        for (const id of Object.keys(related ?? {})) {
+          const node = renderer.nodeLookup?.[id];
+          if (node && !neighbors.has(node)) {
+            neighbors.set(node, highlighted);
+          }
+        }
+      }
+    }
+    return neighbors;
   }
 
   getCurrentSearchMatchIds(engine) {
@@ -645,6 +679,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     if (renderer.searchHighlightNodeIds?.size || renderer.searchHighlightNodes?.size || renderer.searchHighlightColor) {
       renderer.searchHighlightNodeIds = new Set();
       renderer.searchHighlightNodes = new Set();
+      renderer.searchHighlightNeighbors = new Map();
       renderer.searchHighlightColor = null;
       renderer.changed?.();
     }
@@ -669,6 +704,7 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 
     renderer.searchHighlightNodeIds = new Set();
     renderer.searchHighlightNodes = new Set();
+    renderer.searchHighlightNeighbors = new Map();
     renderer.searchHighlightColor = null;
     this.rendererPatches.set(renderer, {});
   }
@@ -710,36 +746,16 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       };
     }
 
-    node.render = function(...args) {
+    // Obsidian calls this for every node in each animation frame. Keep the usual path to the native render.
+    node.render = function() {
       const renderer = this.renderer;
-      const nativeHighlight = renderer.getHighlightNode?.();
-      const searchHighlightNode = nativeHighlight ? null : plugin.getNodeSearchHighlightNode(renderer, this);
-      const renderNode = () => {
-        const result = originalRender.apply(this, args);
-        plugin.drawCanvasGraphNodeShape(this);
-        return result;
-      };
-
-      try {
-        return plugin.renderWithCanvasGraphNodeColor(renderer, this, () => {
-          if (!searchHighlightNode) {
-            return renderNode();
-          }
-
-          const previousHighlightNode = renderer.highlightNode;
-          renderer.highlightNode = searchHighlightNode;
-          try {
-            if (plugin.isSearchHighlightedNode(renderer, this)) {
-              return plugin.renderWithSearchHighlightColor(renderer, renderNode);
-            }
-            return renderNode();
-          } finally {
-            renderer.highlightNode = previousHighlightNode;
-          }
-        });
-      } finally {
+      if (renderer?.[CANVAS_CLOUDS_ACTIVE_PROPERTY]) {
         plugin.canvasGraph.requestMembershipCloudSync(renderer);
       }
+      if (!renderer?.searchHighlightNodes?.size || renderer.getHighlightNode?.()) {
+        return originalRender.apply(this, arguments);
+      }
+      return plugin.renderNodeWithSearchHighlight(renderer, this, originalRender, arguments);
     };
 
     this.nodePatches.set(node, {
@@ -747,6 +763,19 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       initGraphics: originalInitGraphics,
       getDisplayText: originalGetDisplayText
     });
+  }
+
+  renderNodeWithSearchHighlight(renderer, node, originalRender, args) {
+    const previousHighlightNode = renderer.highlightNode;
+    renderer.highlightNode = this.getNodeSearchHighlightNode(renderer, node);
+    try {
+      if (this.isSearchHighlightedNode(renderer, node)) {
+        return this.renderWithSearchHighlightColor(renderer, () => originalRender.apply(node, args));
+      }
+      return originalRender.apply(node, args);
+    } finally {
+      renderer.highlightNode = previousHighlightNode;
+    }
   }
 
   patchGraphLink(link) {
@@ -757,40 +786,57 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const originalRender = link.render;
     const plugin = this;
 
-    link.render = function(...args) {
+    // Obsidian calls this for every link in each animation frame. Keep the usual path to the native render.
+    link.render = function() {
       if (this[CANVAS_ZONE_ATTRACTION_PROPERTY]) {
-        plugin.clearCanvasGraphHiddenLink(this);
+        plugin.hideCanvasGraphLink(this);
         return undefined;
       }
 
       const renderer = this.renderer;
-      const nativeHighlight = renderer.getHighlightNode?.();
-      const highlightedNode = nativeHighlight ? null : plugin.getLinkSearchHighlightNode(renderer, this);
-      const renderLink = () => plugin.renderWithCanvasGraphLinkColor(
-        renderer,
-        this,
-        () => originalRender.apply(this, args)
-      );
-
-      if (!highlightedNode) {
-        return renderLink();
+      const highlightedNode = renderer?.searchHighlightNodes?.size && !renderer.getHighlightNode?.()
+        ? plugin.getLinkSearchHighlightNode(renderer, this)
+        : null;
+      let result;
+      if (highlightedNode) {
+        const previousHighlightNode = renderer.highlightNode;
+        renderer.highlightNode = highlightedNode;
+        try {
+          result = originalRender.apply(this, arguments);
+        } finally {
+          renderer.highlightNode = previousHighlightNode;
+        }
+      } else {
+        result = originalRender.apply(this, arguments);
       }
 
-      const previousHighlightNode = renderer.highlightNode;
-      renderer.highlightNode = highlightedNode;
-      try {
-        return renderLink();
-      } finally {
-        renderer.highlightNode = previousHighlightNode;
-      }
+      plugin.applyCanvasGraphLinkTint(this);
+      return result;
     };
 
     this.linkPatches.set(link, { render: originalRender });
   }
 
-  clearCanvasGraphHiddenLink(link) {
-    for (const item of [link.line, link.arrow, link.path, link.graphics]) {
-      item?.clear?.();
+  // The native render sets these flags again in each frame after the link stops being a hidden zone link.
+  hideCanvasGraphLink(link) {
+    for (const item of [link.line, link.arrow]) {
+      if (item && item.visible !== false) {
+        item.visible = false;
+      }
+    }
+  }
+
+  // The native render moves the tint toward the theme line colour, so write the Canvas colour after it.
+  applyCanvasGraphLinkTint(link) {
+    const color = link[CANVAS_LINK_COLOR_PROPERTY];
+    if (typeof color !== "number") {
+      return;
+    }
+    if (link.line) {
+      link.line.tint = color;
+    }
+    if (link.arrow) {
+      link.arrow.tint = color;
     }
   }
 
@@ -799,14 +845,13 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
-    this.resetCanvasGraphColorStyleCache(renderer);
-
     const rendererPatch = this.rendererPatches.get(renderer);
     if (rendererPatch) {
       delete renderer.isSearchHighlightedNode;
       delete renderer.isSearchRelatedNode;
       delete renderer.searchHighlightNodeIds;
       delete renderer.searchHighlightNodes;
+      delete renderer.searchHighlightNeighbors;
       delete renderer.searchHighlightColor;
       this.rendererPatches.delete(renderer);
     }
@@ -857,27 +902,12 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return node;
     }
 
-    for (const highlighted of renderer.searchHighlightNodes ?? []) {
-      if (node.forward?.hasOwnProperty(highlighted.id) || node.reverse?.hasOwnProperty(highlighted.id)) {
-        return highlighted;
-      }
-    }
-
-    return firstHighlight;
+    return renderer.searchHighlightNeighbors?.get(node) ?? firstHighlight;
   }
 
   isSearchRelatedNode(renderer, node) {
-    if (this.isSearchHighlightedNode(renderer, node)) {
-      return true;
-    }
-
-    for (const highlighted of renderer?.searchHighlightNodes ?? []) {
-      if (node.forward?.hasOwnProperty(highlighted.id) || node.reverse?.hasOwnProperty(highlighted.id)) {
-        return true;
-      }
-    }
-
-    return false;
+    return this.isSearchHighlightedNode(renderer, node)
+      || renderer?.searchHighlightNeighbors?.has(node) === true;
   }
 
   getLinkSearchHighlightNode(renderer, link) {
@@ -911,122 +941,23 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
   }
 
-  renderWithCanvasGraphNodeColor(renderer, node, renderNode) {
-    const color = this.getCanvasGraphNodeRenderColor(renderer, node);
-    const colors = renderer?.colors;
-    if (typeof color !== "number" || !colors?.fill) {
-      return renderNode();
-    }
-
-    const previousNodeColor = node.color;
-    const hadNodeColor = Object.prototype.hasOwnProperty.call(node, "color");
-    const previousFill = colors.fill;
-    node.color = this.getCachedCanvasGraphColorStyle(renderer, previousNodeColor, color, true);
-    colors.fill = this.getCachedCanvasGraphColorStyle(renderer, previousFill, color);
-
-    try {
-      return renderNode();
-    } finally {
-      if (hadNodeColor) {
-        node.color = previousNodeColor;
-      } else {
-        delete node.color;
-      }
-      colors.fill = previousFill;
-    }
-  }
-
-  getCanvasGraphNodeRenderColor(renderer, node) {
-    const explicitColor = node?.[CANVAS_NODE_COLOR_PROPERTY];
-    if (typeof explicitColor === "number") {
-      return explicitColor;
-    }
-
-    const canvasPath = node?.[CANVAS_NODE_COLOR_SOURCE_PROPERTY];
-    return this.canvasGraph?.getCanvasNodeInheritedColor?.(renderer, canvasPath);
-  }
-
-  renderWithCanvasGraphLinkColor(renderer, link, renderLink) {
-    const color = link[CANVAS_LINK_COLOR_PROPERTY];
-    const colors = renderer?.colors;
-    if (typeof color !== "number" || !colors?.line || !colors?.lineHighlight || !colors?.arrow) {
-      return renderLink();
-    }
-
-    const previousLine = colors.line;
-    const previousLineHighlight = colors.lineHighlight;
-    const previousArrow = colors.arrow;
-    colors.line = this.getCachedCanvasGraphColorStyle(renderer, previousLine, color);
-    colors.lineHighlight = this.getCachedCanvasGraphColorStyle(renderer, previousLineHighlight, color);
-    colors.arrow = this.getCachedCanvasGraphColorStyle(renderer, previousArrow, color);
-
-    try {
-      return renderLink();
-    } finally {
-      colors.line = previousLine;
-      colors.lineHighlight = previousLineHighlight;
-      colors.arrow = previousArrow;
-    }
-  }
-
-  getCachedCanvasGraphColorStyle(renderer, baseStyle, color, ensureOpaqueAlpha = false) {
-    this.canvasGraphColorStyleCaches ??= new WeakMap();
-    let rendererCache = this.canvasGraphColorStyleCaches.get(renderer);
-    if (!rendererCache) {
-      rendererCache = {
-        baseStyles: new WeakMap(),
-        emptyStyles: new Map()
-      };
-      this.canvasGraphColorStyleCaches.set(renderer, rendererCache);
-    }
-
-    const isObjectStyle = !!baseStyle && typeof baseStyle === "object";
-    let colorStyles;
-    if (isObjectStyle) {
-      let baseStyleCache = rendererCache.baseStyles.get(baseStyle);
-      if (!baseStyleCache || baseStyleCache.alpha !== baseStyle.a) {
-        baseStyleCache = {
-          alpha: baseStyle.a,
-          colorStyles: new Map()
-        };
-        rendererCache.baseStyles.set(baseStyle, baseStyleCache);
-      }
-      colorStyles = baseStyleCache.colorStyles;
-    } else {
-      colorStyles = rendererCache.emptyStyles;
-    }
-
-    const cacheKey = `${ensureOpaqueAlpha ? "opaque" : "preserve"}:${color}`;
-    let style = colorStyles.get(cacheKey);
-    if (!style) {
-      style = {
-        ...(isObjectStyle ? baseStyle : {}),
-        ...(ensureOpaqueAlpha
-          ? { a: typeof baseStyle?.a === "number" ? baseStyle.a : 1 }
-          : {}),
-        rgb: color
-      };
-      colorStyles.set(cacheKey, style);
-    }
-    return style;
-  }
-
-  resetCanvasGraphColorStyleCache(renderer) {
-    if (renderer) {
-      this.canvasGraphColorStyleCaches?.delete(renderer);
-    }
-  }
-
+  // Draw a shape in white one time for each graphics object. The native render colours it with the tint.
+  // The native initGraphics draws a white circle, so a "circle" shape needs no draw.
+  // Return true when the shape is drawn again.
   drawCanvasGraphNodeShape(node) {
-    const shape = node?.[CANVAS_NODE_SHAPE_PROPERTY];
     const graphics = node?.circle;
-    if (!shape || !graphics || typeof graphics.clear !== "function") {
-      return;
+    if (!graphics || typeof graphics.clear !== "function") {
+      return false;
+    }
+
+    const shape = node[CANVAS_NODE_SHAPE_PROPERTY] || "circle";
+    this.drawnGraphNodeShapes ??= new WeakMap();
+    if ((this.drawnGraphNodeShapes.get(graphics) ?? "circle") === shape) {
+      return false;
     }
 
     graphics.clear();
-    const fillColor = this.getCanvasGraphNodeRenderColor(node.renderer, node);
-    graphics.beginFill?.(typeof fillColor === "number" ? fillColor : 0xffffff, 1);
+    graphics.beginFill?.(0xffffff, 1);
 
     if (shape === "circle") {
       graphics.drawCircle?.(GRAPH_NODE_CENTER, GRAPH_NODE_CENTER, GRAPH_NODE_RADIUS);
@@ -1038,6 +969,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
 
     graphics.endFill?.();
+    this.drawnGraphNodeShapes.set(graphics, shape);
+    return true;
   }
 
   drawRegularGraphPolygon(graphics, sides) {
