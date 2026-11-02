@@ -65,14 +65,14 @@ function countCalls(graphics, name) {
   return graphics.calls.filter(([callName]) => callName === name).length;
 }
 
-function createPaletteDocument(counter) {
+function createPaletteDocument(counter, color = "rgb(255, 0, 0)") {
   return {
     body: { appendChild() {} },
     createElement: () => ({ classList: { add() {} }, style: {}, remove() {} }),
     defaultView: {
       getComputedStyle: () => {
         counter.lookups++;
-        return { color: "rgb(255, 0, 0)" };
+        return { color };
       }
     }
   };
@@ -109,6 +109,8 @@ function createVaultHarness(sources, extraFiles = []) {
   const workspaceHandlers = {};
   const reads = [];
   const files = new Map();
+  const gates = new Map();
+  const state = { graphOpen: true, failGetFiles: false };
   let renders = 0;
 
   const makeFile = (filePath) => Object.assign(new TFile(), {
@@ -125,12 +127,38 @@ function createVaultHarness(sources, extraFiles = []) {
       vaultHandlers[name] = handler;
       return { name };
     },
-    getFiles: () => [...files.values()],
+    getFiles: () => {
+      if (state.failGetFiles) {
+        state.failGetFiles = false;
+        throw new Error("vault index unavailable");
+      }
+      return [...files.values()];
+    },
     getAbstractFileByPath: (filePath) => files.get(filePath) ?? null,
     async cachedRead(file) {
       reads.push(file.path);
+      const gate = gates.get(file.path);
+      if (gate) {
+        gates.delete(file.path);
+        await gate;
+      }
       return sources[file.path];
     }
+  };
+
+  // Like Obsidian: an exact path first, then a path without letter case, then a file name without a folder.
+  const resolveLink = (link) => {
+    if (files.has(link)) {
+      return files.get(link);
+    }
+    const lowerLink = String(link).toLowerCase();
+    for (const file of files.values()) {
+      const lowerPath = file.path.toLowerCase();
+      if (lowerPath === lowerLink || (!lowerLink.includes("/") && lowerPath.split("/").pop() === lowerLink)) {
+        return file;
+      }
+    }
+    return null;
   };
 
   const plugin = createPlugin({
@@ -143,12 +171,12 @@ function createVaultHarness(sources, extraFiles = []) {
         }
       },
       metadataCache: {
-        getFirstLinkpathDest: (link) => files.get(link) ?? null
+        getFirstLinkpathDest: (link) => resolveLink(link)
       },
       internalPlugins: { getPluginById: () => null }
     },
     registerEvent() {},
-    hasOpenGraphView: () => true,
+    hasOpenGraphView: () => state.graphOpen,
     renderOpenGraphViews: () => {
       renders++;
     }
@@ -163,7 +191,15 @@ function createVaultHarness(sources, extraFiles = []) {
     makeFile,
     reads,
     sources,
+    state,
     vaultHandlers,
+    gate(filePath) {
+      let release;
+      gates.set(filePath, new Promise((resolve) => {
+        release = resolve;
+      }));
+      return release;
+    },
     workspaceHandlers,
     get renders() {
       return renders;
@@ -620,6 +656,171 @@ test("removes a deleted Canvas from the graph data without a read", async () => 
   } finally {
     mock.timers.reset();
   }
+});
+
+test("keeps a node that another Canvas shares when one Canvas is deleted", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const harness = createVaultHarness({
+      "A.canvas": canvasSource(["Note.md"]),
+      "B.canvas": canvasSource(["Note.md"])
+    }, ["Note.md"]);
+    await harness.controller.hydrate();
+
+    const deleted = harness.files.get("B.canvas");
+    harness.files.delete("B.canvas");
+    harness.vaultHandlers.delete(deleted);
+    await settleHydration(harness);
+
+    assert.equal(harness.controller.canvasGraphNodes["Note.md"]?.canvasPath, "A.canvas");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("reloads a Canvas for a note that is created during the first full reload", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const harness = createVaultHarness({
+      "A.canvas": canvasSource(["New.md"]),
+      "B.canvas": canvasSource([])
+    });
+    const releaseB = harness.gate("B.canvas");
+    const firstLoad = harness.controller.hydrate();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(harness.reads, ["A.canvas", "B.canvas"]);
+
+    const created = harness.makeFile("New.md");
+    harness.files.set(created.path, created);
+    harness.vaultHandlers.create(created);
+    mock.timers.tick(1000);
+    releaseB();
+    await firstLoad;
+    await harness.controller.hydration;
+
+    assert.equal(harness.controller.canvasGraphNodes["New.md"]?.canvasPath, "A.canvas");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("runs an owed full reload when a graph opens during a reload", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const harness = createVaultHarness({
+      "A.canvas": canvasSource(["Note.md"]),
+      "B.canvas": canvasSource([])
+    }, ["Note.md"]);
+    await harness.controller.hydrate();
+    harness.reads.length = 0;
+
+    const releaseA = harness.gate("A.canvas");
+    harness.vaultHandlers.modify(harness.files.get("A.canvas"));
+    mock.timers.tick(1000);
+    harness.state.graphOpen = false;
+    harness.vaultHandlers.modify(harness.files.get("B.canvas"));
+    assert.equal(harness.controller.needsHydration, true);
+
+    harness.state.graphOpen = true;
+    releaseA();
+    await harness.controller.hydration;
+
+    assert.equal(harness.controller.needsHydration, false);
+    assert.deepEqual([...harness.reads].sort(), ["A.canvas", "A.canvas", "B.canvas"]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("recovers from a failed full reload without a stuck queue", async () => {
+  const harness = createVaultHarness({ "A.canvas": canvasSource(["Note.md"]) }, ["Note.md"]);
+  harness.state.failGetFiles = true;
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    await harness.controller.hydrate();
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(harness.controller.hydration, null);
+  assert.equal(harness.controller.needsHydration, true);
+
+  await harness.controller.hydrate();
+  assert.deepEqual(harness.reads, ["A.canvas"]);
+  assert.equal(harness.controller.needsHydration, false);
+});
+
+test("reloads within the maximum wait while Canvas events keep arriving", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  try {
+    const harness = createVaultHarness({ "A.canvas": canvasSource(["Note.md"]) }, ["Note.md"]);
+    await harness.controller.hydrate();
+    harness.reads.length = 0;
+
+    for (let event = 0; event < 20; event++) {
+      harness.vaultHandlers.modify(harness.files.get("A.canvas"));
+      mock.timers.tick(200);
+    }
+    assert.ok(harness.reads.length >= 1, "a reload must start before the events stop");
+
+    await settleHydration(harness);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("reloads a Canvas when a new file resolves its reference with a different letter case", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const harness = createVaultHarness({
+      "A.canvas": canvasSource(["Notes/Topic.md"]),
+      "B.canvas": canvasSource([])
+    });
+    await harness.controller.hydrate();
+    harness.reads.length = 0;
+
+    const created = harness.makeFile("notes/topic.md");
+    harness.files.set(created.path, created);
+    harness.vaultHandlers.create(created);
+    await settleHydration(harness);
+
+    assert.deepEqual(harness.reads, ["A.canvas"]);
+    assert.equal(harness.controller.canvasGraphNodes["notes/topic.md"]?.canvasPath, "A.canvas");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("looks up an unresolved palette colour one time in each graph rebuild", () => {
+  const controller = new CanvasGraphController(createPlugin());
+  const counter = { lookups: 0 };
+  const doc = createPaletteDocument(counter, "rgb(1, 2, 3)");
+  const cardA = "Board.canvas#cluddlegraphs-canvas-node-a";
+  const cardB = "Board.canvas#cluddlegraphs-canvas-node-b";
+  controller.hydrated = true;
+  controller.canvasGraphNodes = {
+    [cardA]: { type: "text", canvasPath: "Board.canvas", canvasColor: "42", inheritedColor: null, label: "A" },
+    [cardB]: { type: "text", canvasPath: "Board.canvas", canvasColor: "42", inheritedColor: null, label: "B" }
+  };
+  const renderer = { nodes: [], links: [], containerEl: { ownerDocument: doc }, setData() {} };
+  const engine = {
+    renderer,
+    fileFilter: {},
+    options: { cluddlegraphsCanvasLinkMode: "all", cluddlegraphsCanvasLinkColor: "#123456", showOrphans: true }
+  };
+  const createData = () => ({
+    nodes: {
+      [cardA]: { type: "cluddlegraphs-canvas-card", links: {} },
+      [cardB]: { type: "cluddlegraphs-canvas-card", links: {} }
+    }
+  });
+
+  controller.patchRenderer(engine);
+  renderer.setData(createData());
+  assert.equal(counter.lookups, 1);
+  renderer.setData(createData());
+  assert.equal(counter.lookups, 2);
 });
 
 // Phase 4: optional feature paths
