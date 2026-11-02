@@ -14,7 +14,7 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 - `manifest.json`
 - `styles.css`, if the plugin adds one later
 
-For the current `1.6.3` release candidate, run:
+For the current `1.6.4` release candidate, run:
 
 ```bash
 npm run check
@@ -23,17 +23,21 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.6.3
+1.6.4
 ```
 
 Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Release notes:
 
-- Replaced connection-colour text dropdowns with Cluddle Graphs' existing native Obsidian colour picker.
-- Resolved saved Canvas palette slots into their actual picker colours instead of showing labels such as `Colour 19`.
-- Preserved existing palette-slot mappings and native-grey inheritance behavior.
-- Fixed repeated graph synchronization re-enabling Canvas parent links after their native toggle was turned off.
+- Large graphs render faster. Canvas node shapes are drawn one time in white, and Obsidian's native tint gives their colour. Before, each Canvas node shape was drawn again in each animation frame.
+- Canvas card colours go into the graph data, so Obsidian's native renderer applies them. Coloured cards now show their true colour. Before, the colour was applied two times, so the cards looked darker.
+- Canvas link colours are written to the link tint after the native render. Renderer colours are no longer swapped in each frame.
+- A graph rebuild wakes the native render loop only when a Canvas label, shape or link colour changes. Before, each rebuild made the graph draw every node and link for about one second, also in a hidden graph tab. Obsidian rebuilds the graph after each note edit and each Canvas save.
+- Graph rebuilds use about 30% less time, because the Canvas link injection makes fewer key strings and checks each path one time.
+- Canvas palette colours are resolved one time and kept across graph rebuilds. A theme or CSS snippet change clears them.
+- Canvas reloads are debounced, with a maximum wait of 2 seconds. Only the canvases that changed, or that refer to a changed file, are read again. When the parsed Canvas data does not change, the graph is not rebuilt.
+- Search highlight neighbours, hidden zone links and Canvas zone clouds use less work in each frame. Zone clouds are drawn again only when their shapes change, and they stay on their nodes while the graph pans.
 
 ## Manual QA
 
@@ -57,4 +61,9 @@ Before submission, verify:
 - Turning **Canvas parent links** off removes Canvas-to-content hub links and they remain off after graph resynchronization.
 - Recolouring a node or an existing connection does not trigger the connection default again.
 - Disabling the plugin restores the original Canvas connection-creation method.
+- Canvas text, link, and group cards show their true Canvas or inherited colour, and their shapes stay the same while the graph moves.
+- Canvas link colours show on lines and arrows, also while a node is hovered.
+- A Canvas save that only moves a card inside the same group does not rebuild the graph. A new note that a Canvas refers to appears in the graph after a short delay.
+- Canvas zone clouds stay on their nodes while you drag the graph and after a window resize.
+- With a graph tab open in the background, typing in a note and editing a Canvas stay smooth. In the developer tools, a Performance recording made while you type shows no graph frames after the rebuild.
 - Desktop graph and local graph behavior are tested. Mobile support remains disabled until Obsidian mobile graph behavior is explicitly verified.
