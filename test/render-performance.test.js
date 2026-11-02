@@ -1537,3 +1537,94 @@ test("rebuilds a hidden graph one time when it shows, not at each change", () =>
   engine.render();
   assert.equal(nativeRenders, rendersAfterRestore + 1, "the restore must remove the visibility gate");
 });
+
+test("returns the last native render result while the graph is hidden, for the timelapse", () => {
+  let reportSize = null;
+  const el = {
+    win: {
+      ResizeObserver: function(callback) {
+        reportSize = () => callback([]);
+        return { observe() {}, disconnect() {} };
+      }
+    },
+    ownerDocument: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
+    isConnected: true,
+    clientWidth: 800,
+    clientHeight: 600
+  };
+  const renderer = { nodes: [], links: [], containerEl: el, getHighlightNode: () => null, changed() {} };
+  const engine = { renderer, options: {}, setQuery() {}, render: () => 42 };
+  const plugin = createPlugin({ enginePatches: new WeakMap(), canvasGraph: { syncSearchMatches() {} } });
+  plugin.patchGraphEngine(engine);
+  assert.equal(engine.render(), 42);
+
+  el.clientWidth = 0;
+  reportSize();
+  assert.equal(engine.render(), 42, "the native timelapse loop stops when render returns no value");
+});
+
+test("removes the visibility watch when the graph view closes and when the plugin restores the graph", () => {
+  const createGraph = () => {
+    const state = { observers: 0, listeners: 0, closeCallbacks: [] };
+    const el = {
+      win: {
+        ResizeObserver: function() {
+          state.observers++;
+          return {
+            observe() {},
+            disconnect() {
+              state.observers--;
+            }
+          };
+        }
+      },
+      ownerDocument: {
+        visibilityState: "visible",
+        addEventListener(type) {
+          if (type === "visibilitychange") {
+            state.listeners++;
+          }
+        },
+        removeEventListener(type) {
+          if (type === "visibilitychange") {
+            state.listeners--;
+          }
+        }
+      },
+      isConnected: true,
+      clientWidth: 800,
+      clientHeight: 600
+    };
+    const renderer = { nodes: [], links: [], containerEl: el, getHighlightNode: () => null, changed() {} };
+    const view = {
+      register(callback) {
+        state.closeCallbacks.push(callback);
+      }
+    };
+    return { state, engine: { renderer, view, options: {}, setQuery() {}, render() {} } };
+  };
+  const plugin = createPlugin({
+    enginePatches: new WeakMap(),
+    localGraphNodeClickPatches: new WeakMap(),
+    resetButtonPatches: new WeakMap(),
+    filterControls: new WeakMap(),
+    displayControls: new WeakMap(),
+    canvasGraph: { syncSearchMatches() {}, restoreEngine() {} }
+  });
+
+  const closed = createGraph();
+  plugin.patchGraphEngine(closed.engine);
+  assert.equal(closed.state.observers, 1);
+  assert.equal(closed.state.listeners, 1);
+  for (const callback of closed.state.closeCallbacks) {
+    callback();
+  }
+  assert.equal(closed.state.observers, 0, "a closed graph view must not keep its observer");
+  assert.equal(closed.state.listeners, 0, "a closed graph view must not keep its document listener");
+
+  const restored = createGraph();
+  plugin.patchGraphEngine(restored.engine);
+  plugin.restoreGraphEngine(restored.engine);
+  assert.equal(restored.state.observers, 0);
+  assert.equal(restored.state.listeners, 0);
+});

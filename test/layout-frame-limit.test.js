@@ -367,3 +367,28 @@ test("draws no frames while the graph is hidden, and draws the latest layout whe
   display.run(3000);
   assert.ok(renderer.frames >= 25, `${renderer.frames} frames in the first second after the graph shows`);
 });
+
+test("queues no frame for a worker message while the graph is hidden", () => {
+  const display = createDisplay();
+  const renderer = createNativeRenderer(display, 2);
+  let reportSize = null;
+  display.win.ResizeObserver = function(callback) {
+    reportSize = () => callback([]);
+    return { observe() {}, disconnect() {} };
+  };
+  Object.assign(renderer.containerEl, {
+    ownerDocument: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
+    isConnected: true,
+    clientWidth: 800,
+    clientHeight: 600
+  });
+  limitLayoutFrames(renderer);
+  watchGraphVisibility(renderer, () => renderer.changed());
+  renderer.initGraphics();
+  renderer.containerEl.clientWidth = 0;
+  reportSize();
+  display.run(100);
+
+  renderer.worker.onmessage({ data: { id: [], buffer: null } });
+  assert.equal(display.pendingFrameCount(), 0, "a hidden graph must not queue a frame for a layout step");
+});

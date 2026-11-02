@@ -189,3 +189,24 @@ test("does not watch a graph when its window has no ResizeObserver", () => {
   assert.equal(isGraphVisible(renderer), true, "without size reports, the graph must never stop");
   assert.equal(window.listenerCount(), 0);
 });
+
+test("reads no element size when it checks the visibility state", () => {
+  const window = createWindow();
+  const el = createGraphElement(window);
+  let sizeReads = 0;
+  Object.defineProperty(el, "clientWidth", {
+    configurable: true,
+    get() {
+      sizeReads++;
+      return 800;
+    }
+  });
+  const renderer = { containerEl: el };
+  watchGraphVisibility(renderer, () => {});
+
+  sizeReads = 0;
+  for (let index = 0; index < 100; index++) {
+    isGraphVisible(renderer);
+  }
+  assert.equal(sizeReads, 0, "a check in each frame must not cause layout work");
+});
