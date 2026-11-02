@@ -72,6 +72,7 @@ const nativeRendererPrototype = {
       this.frames++;
       this.busy += this.frameCost;
       this.firstFrameStart ??= start;
+      this.frameStarts.push(start);
       this.lastFrameEnd = this.display.now();
       this.idleFrames++;
       this.queueRender();
@@ -93,6 +94,7 @@ function createNativeRenderer(display, frameCost) {
     frames: 0,
     busy: 0,
     firstFrameStart: null,
+    frameStarts: [],
     lastFrameEnd: null,
     idleFrames: 0,
     renderTimer: null,
@@ -122,6 +124,7 @@ function resetCounts(renderer) {
   renderer.frames = 0;
   renderer.busy = 0;
   renderer.firstFrameStart = null;
+  renderer.frameStarts = [];
   renderer.lastFrameEnd = null;
 }
 
@@ -165,6 +168,13 @@ test("keeps half of the main thread free while a new link restarts the layout, a
   assert.ok(renderer.frames >= 61, `the idle tail must draw all its frames, but drew ${renderer.frames}`);
   const span = renderer.lastFrameEnd - renderer.firstFrameStart;
   assert.ok(renderer.busy / span <= 0.55, `the graph used ${Math.round((100 * renderer.busy) / span)}% of the main thread`);
+
+  // The limit must cover all 61 idle frames after the last worker step, not only a part of them.
+  const tailStarts = renderer.frameStarts.filter((start) => start >= restartAt + 250 * REFRESH_MS);
+  const tailSpan = renderer.lastFrameEnd - tailStarts[0];
+  const tailBusy = tailStarts.length * renderer.frameCost;
+  assert.ok(tailStarts.length >= 55, `${tailStarts.length} frames after the last worker step`);
+  assert.ok(tailBusy / tailSpan <= 0.55, `the idle tail used ${Math.round((100 * tailBusy) / tailSpan)}% of the main thread`);
 });
 
 test("draws at full rate when only a hover or pan wakes the graph", () => {
@@ -289,7 +299,8 @@ test("keeps one queued frame when Obsidian destroys and inits the graphics in on
     maxPending = Math.max(maxPending, display.pendingFrameCount());
     messages(time);
   };
-  display.run(130, watch);
+  // At 100 ms, a limited frame waits for its next turn.
+  display.run(100, watch);
   const frames = renderer.frames;
 
   renderer.destroyGraphics();
