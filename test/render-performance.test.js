@@ -1428,3 +1428,27 @@ test("redraws membership clouds only when the cloud shapes change", () => {
   controller.syncMembershipClouds(engine);
   assert.equal(draws, 3);
 });
+
+test("limits layout frames for each patched graph renderer and removes the limit on restore", () => {
+  const plugin = createPlugin();
+  const nativeQueueRender = function() {};
+  const nativeOnMessage = function() {};
+  const renderer = {
+    nodes: [],
+    links: [],
+    renderTimer: null,
+    renderCallback: null,
+    containerEl: { win: { requestAnimationFrame: () => 1, cancelAnimationFrame() {}, performance: { now: () => 0 } } },
+    worker: { onmessage: nativeOnMessage },
+    getHighlightNode: () => null,
+    queueRender: nativeQueueRender
+  };
+
+  plugin.patchRenderer(renderer);
+  assert.notEqual(renderer.queueRender, nativeQueueRender, "the patch must limit the layout frames");
+  assert.notEqual(renderer.worker.onmessage, nativeOnMessage, "the patch must see the layout worker messages");
+
+  plugin.restoreRenderer(renderer);
+  assert.equal(renderer.queueRender, nativeQueueRender);
+  assert.equal(renderer.worker.onmessage, nativeOnMessage);
+});
