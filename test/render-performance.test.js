@@ -370,6 +370,110 @@ test("puts Canvas card colours into graph data before native setData and keeps t
   assert.equal(seen.b, first.b);
 });
 
+// Fix the output of the Canvas link injection in each link mode, so that a faster version keeps it.
+test("keeps the Canvas link injection output in each link mode", () => {
+  const files = new Map(["Note.md", "Other.md", "Extra.md", "Lonely.md", "image.png", "Board.canvas"]
+    .map((filePath) => [filePath, Object.assign(new TFile(), { path: filePath, extension: filePath.split(".").pop() })]));
+  const controller = new CanvasGraphController(createPlugin({
+    app: {
+      vault: { getAbstractFileByPath: (filePath) => files.get(filePath) ?? null },
+      metadataCache: { getFirstLinkpathDest: (link) => files.get(link) ?? null },
+      internalPlugins: { getPluginById: () => null }
+    }
+  }));
+  const graphData = controller.parseCanvasGraphData("Board.canvas", JSON.stringify({
+    nodes: [
+      { id: "n", type: "file", file: "Note.md", x: 0, y: 0, width: 100, height: 50 },
+      { id: "o", type: "file", file: "Other.md", x: 200, y: 0, width: 100, height: 50 },
+      { id: "i", type: "file", file: "image.png", x: 400, y: 0, width: 100, height: 50 },
+      { id: "c", type: "text", text: "Card", x: 0, y: 200, width: 100, height: 50 }
+    ],
+    edges: [
+      { id: "e1", fromNode: "n", toNode: "o", color: "1" },
+      { id: "e2", fromNode: "c", toNode: "n" },
+      { id: "e3", fromNode: "o", toNode: "i" }
+    ]
+  }));
+  controller.canvasGraphLinks = { "Board.canvas": graphData.links };
+  controller.canvasGraphNodes = graphData.nodes;
+  controller.hydrated = true;
+  controller.invalidateCanvasGraphLinkCache();
+
+  const card = "Board.canvas#cluddlegraphs-canvas-node-c";
+  const createData = () => ({
+    nodes: {
+      "Note.md": { type: "", links: { "Extra.md": true, "Other.md": true } },
+      "Other.md": { type: "", links: {} },
+      "Extra.md": { type: "", links: { "Note.md": true } },
+      "Lonely.md": { type: "", links: {} },
+      "Board.canvas": { type: "", links: { "Note.md": true, "Other.md": true } }
+    }
+  });
+  const summarize = (data) => Object.fromEntries(Object.entries(data.nodes)
+    .map(([id, node]) => [id, Object.keys(node.links).sort()]));
+  const run = (mode, showOrphans) => {
+    const engine = { fileFilter: {}, options: { cluddlegraphsCanvasLinkMode: mode, showOrphans, showAttachments: false } };
+    controller.applyCanvasLinksToGraphData(createData(), engine);
+    const data = createData();
+    const canvasLinks = controller.applyCanvasLinksToGraphData(data, engine);
+    return { data, canvasLinks, engine };
+  };
+  const allLinks = {
+    "Note.md": ["Extra.md", "Other.md"],
+    "Other.md": [],
+    "Extra.md": ["Note.md"],
+    "Lonely.md": [],
+    "Board.canvas": [card, "Note.md", "Other.md"],
+    [card]: ["Note.md"]
+  };
+  const nativeLinks = {
+    "Note.md": ["Extra.md", "Other.md"],
+    "Other.md": [],
+    "Extra.md": ["Note.md"],
+    "Lonely.md": [],
+    "Board.canvas": ["Note.md", "Other.md"]
+  };
+  const onlyLinks = { ...allLinks, "Note.md": ["Other.md"], "Extra.md": [] };
+
+  for (const showOrphans of [true, false]) {
+    const all = run("all", showOrphans);
+    assert.deepEqual(summarize(all.data), allLinks);
+    assert.equal(all.data.numLinks, 7);
+    assert.equal(all.data.nodes[card].type, "cluddlegraphs-canvas-card");
+    assert.deepEqual(Object.keys(all.canvasLinks).sort(), [
+      `Board.canvas\0${card}`,
+      "Board.canvas\0Note.md",
+      "Board.canvas\0Other.md",
+      `${card}\0Note.md`,
+      "Note.md\0Other.md"
+    ]);
+    assert.deepEqual([...controller.injectedCanvasLinkKeys.get(all.engine)].sort(), [`Board.canvas\0${card}`, `${card}\0Note.md`]);
+
+    const only = run("only", showOrphans);
+    const expectedOnly = { ...onlyLinks };
+    if (!showOrphans) {
+      delete expectedOnly["Extra.md"];
+      delete expectedOnly["Lonely.md"];
+    }
+    assert.deepEqual(summarize(only.data), expectedOnly);
+    assert.equal(only.data.numLinks, 5);
+
+    const hide = run("hide", showOrphans);
+    assert.deepEqual(summarize(hide.data), nativeLinks);
+    assert.equal(hide.data.numLinks, undefined);
+    assert.deepEqual(hide.canvasLinks, {});
+  }
+
+  // Obsidian can pass the same data object again after a mode change.
+  const engine = { fileFilter: {}, options: { cluddlegraphsCanvasLinkMode: "all", showOrphans: true, showAttachments: false } };
+  const data = createData();
+  controller.applyCanvasLinksToGraphData(data, engine);
+  engine.options.cluddlegraphsCanvasLinkMode = "hide";
+  controller.applyCanvasLinksToGraphData(data, engine);
+  assert.deepEqual(summarize(data), { ...nativeLinks, [card]: [] });
+  assert.equal(data.numLinks, 5);
+});
+
 test("leaves a Canvas card without any colour source to the native fill", () => {
   const controller = new CanvasGraphController(createPlugin());
   const card = "Board.canvas#cluddlegraphs-canvas-node-a";
