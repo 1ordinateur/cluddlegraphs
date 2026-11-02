@@ -498,6 +498,27 @@ test("marks a Canvas label dirty only when the label changes", () => {
   assert.equal(node.text.text, "B");
 });
 
+// The native label font size is 14 + getSize() / 4, and native code sets fontDirty only on a theme change.
+test("marks a Canvas label dirty when the node size changes", () => {
+  const controller = new CanvasGraphController(createPlugin());
+  const card = "Board.canvas#cluddlegraphs-canvas-node-a";
+  controller.canvasGraphNodes = {
+    [card]: { type: "text", canvasPath: "Board.canvas", label: "A" }
+  };
+  const engine = { options: {} };
+  let size = 8;
+  const node = { id: card, text: { text: "" }, fontDirty: false, getSize: () => size };
+
+  controller.syncNode(engine, node);
+  node.fontDirty = false;
+  controller.syncNode(engine, node);
+  assert.equal(node.fontDirty, false);
+
+  size = 12;
+  controller.syncNode(engine, node);
+  assert.equal(node.fontDirty, true);
+});
+
 test("appends the highlight toggle only when it is not already the last control", () => {
   const plugin = createPlugin();
   const settingEl = {};
@@ -891,6 +912,50 @@ test("maps graph node centres into the cloud layer from node positions", () => {
 
   assert.deepEqual(cloud.points, [{ x: 16, y: 34 }]);
   assert.equal(cloud.padding, 112);
+});
+
+// PIXI updates worldTransform only in a stage render or in toGlobal. A drag-pan moves the hanger
+// between frames, so the cloud sync must update the transforms before it reads them.
+test("updates the world transforms one time before it maps cloud points", () => {
+  const controller = new CanvasGraphController(createPlugin());
+  const node = {
+    id: "Note.md",
+    x: 5,
+    y: 7,
+    circle: {
+      scale: { x: 0.5, y: 0.5 },
+      toGlobal() {
+        throw new Error("recursive transform update");
+      }
+    }
+  };
+  const updates = { hanger: 0, layer: 0 };
+  const hanger = {
+    x: 30,
+    y: 40,
+    worldTransform: { a: 2, b: 0, c: 0, d: 2, tx: 10, ty: 20 },
+    toGlobal() {
+      updates.hanger++;
+      this.worldTransform = { a: 2, b: 0, c: 0, d: 2, tx: this.x, ty: this.y };
+      return { x: this.x, y: this.y };
+    }
+  };
+  const layer = {
+    parent: {},
+    worldTransform: { a: 1, b: 0, c: 0, d: 1, tx: 4, ty: 0 },
+    toGlobal() {
+      updates.layer++;
+      return { x: 4, y: 0 };
+    }
+  };
+  const renderer = { hanger, nodeLookup: { "Note.md": node } };
+  controller.cloudLayers.set(renderer, layer);
+  controller.canvasMemberships = { "A.canvas": ["Note.md"], "B.canvas": ["Note.md"] };
+
+  const clouds = controller.getVisibleCanvasMembershipClouds(renderer);
+
+  assert.deepEqual(clouds.map((cloud) => cloud.points), [[{ x: 36, y: 54 }], [{ x: 36, y: 54 }]]);
+  assert.deepEqual(updates, { hanger: 1, layer: 1 });
 });
 
 test("redraws membership clouds only when the cloud shapes change", () => {
