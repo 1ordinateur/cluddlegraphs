@@ -12,9 +12,9 @@ The GitHub release whose tag matches `manifest.json` `version` must include:
 
 - `main.js`
 - `manifest.json`
-- `styles.css`, if the plugin adds one later
+- `styles.css`
 
-For the current `1.6.4` release candidate, run:
+For the current `1.6.5` release candidate, run:
 
 ```bash
 npm run check
@@ -23,24 +23,17 @@ npm run check
 Then create a GitHub release tagged:
 
 ```bash
-1.6.4
+1.6.5
 ```
 
 Attach `main.js`, `manifest.json`, and `styles.css` to that release.
 
 Release notes:
 
-- A Canvas connection inside a group now shows the colour of that group. The smallest group that holds both ends of the connection gives the colour. A group can also be one end of the connection. A group with no colour uses the colour of its parent group. The group colour replaces the colour of the connection itself. If no group holds both ends, or if no group in that chain has a colour, the connection keeps its own colour. The links from a group to its cards do not change.
-- A graph updates only while you can see it. A graph in a tab that is not active, in a collapsed sidebar or in a minimized window does not rebuild and does not draw. When it shows again, it rebuilds one time if it missed a change, and it draws its latest layout. Before, a hidden graph rebuilt after each note or Canvas save, and each release of an arrow key, `-` or `=` made it draw for 61 frames.
-- Obsidian stays responsive while the graph layout moves, for example after a new link or note. Obsidian draws the full graph on the main thread, which also runs the editor. While the layout moves, and for the 61 idle frames after it, the graph now draws at most about 30 frames a second. It also waits at least as long as the last frame took, so the graph uses at most about half of the main thread. A hover, pan or zoom without layout motion keeps the full frame rate.
-- Large graphs render faster. Canvas node shapes are drawn one time in white, and Obsidian's native tint gives their colour. Before, each Canvas node shape was drawn again in each animation frame.
-- Canvas card colours go into the graph data, so Obsidian's native renderer applies them. Coloured cards now show their true colour. Before, the colour was applied two times, so the cards looked darker.
-- Canvas link colours are written to the link tint after the native render. Renderer colours are no longer swapped in each frame.
-- A graph rebuild wakes the native render loop only when a Canvas label, shape or link colour changes. Before, each rebuild made the graph draw every node and link for about one second, also in a hidden graph tab. Obsidian rebuilds the graph after each note edit and each Canvas save.
-- Graph rebuilds use about 30% less time, because the Canvas link injection makes fewer key strings and checks each path one time.
-- Canvas palette colours are resolved one time and kept across graph rebuilds. A theme or CSS snippet change clears them.
-- Canvas reloads are debounced, with a maximum wait of 2 seconds. Only the canvases that changed, or that refer to a changed file, are read again. When the parsed Canvas data does not change, the graph is not rebuilt.
-- Search highlight neighbours, hidden zone links and Canvas zone clouds use less work in each frame. Zone clouds are drawn again only when their shapes change, and they stay on their nodes while the graph pans.
+- The plugin reads each Canvas palette colour from the `--canvas-color` value of its Canvas colour class. The result does not depend on `styles.css` or on the order of theme rules.
+- The hidden colour probes get `display: none` from `styles.css`, not from an inline style.
+- The graph and Canvas method wrappers no longer copy `this` into a local variable. The behaviour does not change.
+- These changes follow the source rules of the Obsidian Community directory review.
 
 ## Manual QA
 
@@ -66,6 +59,7 @@ Before submission, verify:
 - Disabling the plugin restores the original Canvas connection-creation method.
 - Canvas text, link, and group cards show their true Canvas or inherited colour, and their shapes stay the same while the graph moves.
 - Canvas link colours show on lines and arrows, also while a node is hovered.
+- Canvas palette colours in the graph and the colour swatches in the plugin settings show the same colours as in 1.6.4, also in a graph in a separate window.
 - In a Canvas, connect two cards in one coloured group, also with a connection that has its own colour. The graph link shows the group colour. A connection to a card in a different group keeps its own colour.
 - A Canvas save that only moves a card inside the same group does not rebuild the graph. A new note that a Canvas refers to appears in the graph after a short delay.
 - Canvas zone clouds stay on their nodes while you drag the graph and after a window resize.
