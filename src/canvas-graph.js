@@ -56,7 +56,6 @@ const CANVAS_RENDER_LOADING_CLASS = "cluddlegraphs-canvas-render-loading";
 const CANVAS_RENDER_READY_CLASS = "cluddlegraphs-canvas-render-ready";
 const GROUP_MEMBERSHIP_METADATA_VERSION = 2;
 const CANVAS_GROUP_TOP_EXTENSION = 20;
-const UNRESOLVED_CANVAS_COLOR = 0x010203;
 const DEFAULT_LOCAL_CANVAS_DEPTH = 2;
 const GRAPH_NODE_CENTER = 100;
 const CANVAS_CLOUD_PADDING = GRAPH_NODE_CENTER + 12;
@@ -1081,20 +1080,20 @@ module.exports = class CanvasGraphController {
     }
 
     const originalSetData = renderer.setData;
-    const controller = this;
-    renderer.setData = function(data) {
-      if (!controller.hydrated) {
-        controller.markRendererHydrating(this);
-        controller.prepareNativeGraphDataWhileHydrating(data, engine);
-        return originalSetData.call(this, data);
+    // The engine calls setData on this renderer only, so the wrapper uses the renderer from the closure.
+    renderer.setData = (data) => {
+      if (!this.hydrated) {
+        this.markRendererHydrating(renderer);
+        this.prepareNativeGraphDataWhileHydrating(data, engine);
+        return originalSetData.call(renderer, data);
       }
 
-      controller.beginCanvasColorRebuild();
-      const canvasLinks = controller.applyCanvasLinksToGraphData(data, engine);
-      controller.applyCanvasCardColors(data, engine);
-      const result = originalSetData.call(this, data);
-      controller.syncRenderer(engine, canvasLinks);
-      controller.revealRendererAfterHydration(this);
+      this.beginCanvasColorRebuild();
+      const canvasLinks = this.applyCanvasLinksToGraphData(data, engine);
+      this.applyCanvasCardColors(data, engine);
+      const result = originalSetData.call(renderer, data);
+      this.syncRenderer(engine, canvasLinks);
+      this.revealRendererAfterHydration(renderer);
       return result;
     };
     // Node frames request the zone cloud sync, so the clouds follow the drawn frames and the layout frame limit.
@@ -3359,26 +3358,24 @@ module.exports = class CanvasGraphController {
       return null;
     }
 
+    // Read the palette value that the Canvas colour class of Obsidian or the theme gives.
+    // This uses no plugin CSS, because Obsidian loads styles.css after onload.
     const el = doc.createElement("div");
-    el.classList.add(`mod-canvas-color-${color}`);
-    el.style.color = "var(--canvas-color, rgb(1, 2, 3))";
-    el.style.display = "none";
+    el.classList.add(`mod-canvas-color-${color}`, "cluddlegraphs-color-probe");
     doc.body.appendChild(el);
-
+    let paletteValue;
     try {
-      const resolvedColor = this.parseRgbColor((doc.defaultView ?? window).getComputedStyle(el).color);
-      return resolvedColor === UNRESOLVED_CANVAS_COLOR ? null : resolvedColor;
+      paletteValue = (doc.defaultView ?? window).getComputedStyle(el).getPropertyValue("--canvas-color").trim();
     } finally {
       this.plugin.detachElement(el);
     }
-  }
 
-  parseRgbColor(color) {
-    const match = color.match(/^rgba?\(\s*(\d+)(?:,|\s+)\s*(\d+)(?:,|\s+)\s*(\d+)/);
-    if (!match) {
+    // An empty value is a palette slot that the theme does not define.
+    if (!paletteValue) {
       return null;
     }
-    return (parseInt(match[1], 10) << 16) + (parseInt(match[2], 10) << 8) + parseInt(match[3], 10);
+    const resolvedColor = this.plugin.resolveCssColor(paletteValue, doc);
+    return resolvedColor ? this.plugin.hexToRgb(resolvedColor) : null;
   }
 
   async refreshAllGroupMembershipMetadata() {

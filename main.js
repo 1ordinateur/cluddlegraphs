@@ -372,29 +372,29 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
-    const plugin = this;
-    engine.setQuery = function(queries) {
-      plugin.currentSearchHighlightEngine = plugin.isHighlightModeEnabled(this) ? this : null;
+    // Obsidian calls setQuery and render on this engine only, so the wrappers use the engine from the closure.
+    engine.setQuery = (queries) => {
+      this.currentSearchHighlightEngine = this.isHighlightModeEnabled(engine) ? engine : null;
       try {
-        return originalSetQuery.call(this, plugin.prepareQueriesForSearchHighlight(this, queries));
+        return originalSetQuery.call(engine, this.prepareQueriesForSearchHighlight(engine, queries));
       } finally {
-        plugin.currentSearchHighlightEngine = null;
-        plugin.syncRendererSearchHighlights(this);
+        this.currentSearchHighlightEngine = null;
+        this.syncRendererSearchHighlights(engine);
       }
     };
 
     const patch = { setQuery: originalSetQuery, render: originalRender, renderOwed: false, lastRenderResult: undefined };
-    engine.render = function(...args) {
+    engine.render = (...args) => {
       // A hidden graph does not rebuild. It rebuilds one time when it shows.
-      if (!isGraphVisible(this.renderer)) {
+      if (!isGraphVisible(engine.renderer)) {
         patch.renderOwed = true;
         // The native timelapse loop continues only while render returns a value, so give the last value.
         return patch.lastRenderResult;
       }
       patch.renderOwed = false;
-      plugin.syncCanvasGraphSearchMatches(this);
-      const result = originalRender.apply(this, args);
-      plugin.syncRendererSearchHighlights(this);
+      this.syncCanvasGraphSearchMatches(engine);
+      const result = originalRender.apply(engine, args);
+      this.syncRendererSearchHighlights(engine);
       patch.lastRenderResult = result;
       return result;
     };
@@ -475,22 +475,22 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
 
     const renderer = engine.renderer;
     const originalOnNodeClick = renderer.onNodeClick;
-    const plugin = this;
-    const patchedOnNodeClick = function(event, path, nodeType) {
+    // The renderer calls onNodeClick on itself only, so the wrapper uses the renderer from the closure.
+    const patchedOnNodeClick = (event, path, nodeType) => {
       const usesNativeNavigation = (typeof event?.button === "number" && event.button !== 0)
         || !!event?.shiftKey
         || !!event?.altKey;
       if (nodeType === "tag" || usesNativeNavigation) {
-        return originalOnNodeClick.call(this, event, path, nodeType);
+        return originalOnNodeClick.call(renderer, event, path, nodeType);
       }
 
-      const targetLeaf = plugin.getMainEditorLeaf();
-      const file = plugin.app.metadataCache.getFirstLinkpathDest(path, "");
+      const targetLeaf = this.getMainEditorLeaf();
+      const file = this.app.metadataCache.getFirstLinkpathDest(path, "");
       if (!targetLeaf || !file || typeof targetLeaf.openFile !== "function") {
-        return originalOnNodeClick.call(this, event, path, nodeType);
+        return originalOnNodeClick.call(renderer, event, path, nodeType);
       }
 
-      plugin.app.workspace.setActiveLeaf(targetLeaf, { focus: true });
+      this.app.workspace.setActiveLeaf(targetLeaf, { focus: true });
       return targetLeaf.openFile(file, { active: true });
     };
     renderer.onNodeClick = patchedOnNodeClick;
@@ -729,13 +729,8 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
       return;
     }
 
-    const plugin = this;
-    renderer.isSearchHighlightedNode = function(node) {
-      return plugin.isSearchHighlightedNode(this, node);
-    };
-    renderer.isSearchRelatedNode = function(node) {
-      return plugin.isSearchRelatedNode(this, node);
-    };
+    renderer.isSearchHighlightedNode = (node) => this.isSearchHighlightedNode(renderer, node);
+    renderer.isSearchRelatedNode = (node) => this.isSearchRelatedNode(renderer, node);
 
     renderer.searchHighlightNodeIds = new Set();
     renderer.searchHighlightNodes = new Set();
@@ -762,35 +757,34 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     const originalRender = node.render;
     const originalInitGraphics = typeof node.initGraphics === "function" ? node.initGraphics : null;
     const originalGetDisplayText = typeof node.getDisplayText === "function" ? node.getDisplayText : null;
-    const plugin = this;
-
+    // The renderer calls these methods on this node only, so the wrappers use the node from the closure.
     if (originalInitGraphics) {
-      node.initGraphics = function(...args) {
-        const result = originalInitGraphics.apply(this, args);
-        plugin.drawCanvasGraphNodeShape(this);
+      node.initGraphics = (...args) => {
+        const result = originalInitGraphics.apply(node, args);
+        this.drawCanvasGraphNodeShape(node);
         return result;
       };
     }
 
     if (originalGetDisplayText) {
-      node.getDisplayText = function(...args) {
-        if (this[CANVAS_NODE_LABEL_PROPERTY]) {
-          return this[CANVAS_NODE_LABEL_PROPERTY];
+      node.getDisplayText = (...args) => {
+        if (node[CANVAS_NODE_LABEL_PROPERTY]) {
+          return node[CANVAS_NODE_LABEL_PROPERTY];
         }
-        return originalGetDisplayText.apply(this, args);
+        return originalGetDisplayText.apply(node, args);
       };
     }
 
     // Obsidian calls this for every node in each animation frame. Keep the usual path to the native render.
-    node.render = function() {
-      const renderer = this.renderer;
+    node.render = (...args) => {
+      const renderer = node.renderer;
       if (renderer?.[CANVAS_CLOUDS_ACTIVE_PROPERTY]) {
-        plugin.canvasGraph.requestMembershipCloudSync(renderer);
+        this.canvasGraph.requestMembershipCloudSync(renderer);
       }
       if (!renderer?.searchHighlightNodes?.size || renderer.getHighlightNode?.()) {
-        return originalRender.apply(this, arguments);
+        return originalRender.apply(node, args);
       }
-      return plugin.renderNodeWithSearchHighlight(renderer, this, originalRender, arguments);
+      return this.renderNodeWithSearchHighlight(renderer, node, originalRender, args);
     };
 
     this.nodePatches.set(node, {
@@ -819,33 +813,33 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
 
     const originalRender = link.render;
-    const plugin = this;
 
     // Obsidian calls this for every link in each animation frame. Keep the usual path to the native render.
-    link.render = function() {
-      if (this[CANVAS_ZONE_ATTRACTION_PROPERTY]) {
-        plugin.hideCanvasGraphLink(this);
+    // The renderer calls render on this link only, so the wrapper uses the link from the closure.
+    link.render = (...args) => {
+      if (link[CANVAS_ZONE_ATTRACTION_PROPERTY]) {
+        this.hideCanvasGraphLink(link);
         return undefined;
       }
 
-      const renderer = this.renderer;
+      const renderer = link.renderer;
       const highlightedNode = renderer?.searchHighlightNodes?.size && !renderer.getHighlightNode?.()
-        ? plugin.getLinkSearchHighlightNode(renderer, this)
+        ? this.getLinkSearchHighlightNode(renderer, link)
         : null;
       let result;
       if (highlightedNode) {
         const previousHighlightNode = renderer.highlightNode;
         renderer.highlightNode = highlightedNode;
         try {
-          result = originalRender.apply(this, arguments);
+          result = originalRender.apply(link, args);
         } finally {
           renderer.highlightNode = previousHighlightNode;
         }
       } else {
-        result = originalRender.apply(this, arguments);
+        result = originalRender.apply(link, args);
       }
 
-      plugin.applyCanvasGraphLinkTint(this);
+      this.applyCanvasGraphLinkTint(link);
       return result;
     };
 
@@ -1069,8 +1063,9 @@ module.exports = class CluddleGraphsPlugin extends Plugin {
     }
 
     const el = doc.createElement("div");
+    // styles.css hides the probe. Only the colour to resolve goes inline.
+    el.classList.add("cluddlegraphs-color-probe");
     el.style.color = color;
-    el.style.display = "none";
     doc.body.appendChild(el);
 
     try {
@@ -1184,7 +1179,6 @@ const CANVAS_RENDER_LOADING_CLASS = "cluddlegraphs-canvas-render-loading";
 const CANVAS_RENDER_READY_CLASS = "cluddlegraphs-canvas-render-ready";
 const GROUP_MEMBERSHIP_METADATA_VERSION = 2;
 const CANVAS_GROUP_TOP_EXTENSION = 20;
-const UNRESOLVED_CANVAS_COLOR = 0x010203;
 const DEFAULT_LOCAL_CANVAS_DEPTH = 2;
 const GRAPH_NODE_CENTER = 100;
 const CANVAS_CLOUD_PADDING = GRAPH_NODE_CENTER + 12;
@@ -2209,20 +2203,20 @@ module.exports = class CanvasGraphController {
     }
 
     const originalSetData = renderer.setData;
-    const controller = this;
-    renderer.setData = function(data) {
-      if (!controller.hydrated) {
-        controller.markRendererHydrating(this);
-        controller.prepareNativeGraphDataWhileHydrating(data, engine);
-        return originalSetData.call(this, data);
+    // The engine calls setData on this renderer only, so the wrapper uses the renderer from the closure.
+    renderer.setData = (data) => {
+      if (!this.hydrated) {
+        this.markRendererHydrating(renderer);
+        this.prepareNativeGraphDataWhileHydrating(data, engine);
+        return originalSetData.call(renderer, data);
       }
 
-      controller.beginCanvasColorRebuild();
-      const canvasLinks = controller.applyCanvasLinksToGraphData(data, engine);
-      controller.applyCanvasCardColors(data, engine);
-      const result = originalSetData.call(this, data);
-      controller.syncRenderer(engine, canvasLinks);
-      controller.revealRendererAfterHydration(this);
+      this.beginCanvasColorRebuild();
+      const canvasLinks = this.applyCanvasLinksToGraphData(data, engine);
+      this.applyCanvasCardColors(data, engine);
+      const result = originalSetData.call(renderer, data);
+      this.syncRenderer(engine, canvasLinks);
+      this.revealRendererAfterHydration(renderer);
       return result;
     };
     // Node frames request the zone cloud sync, so the clouds follow the drawn frames and the layout frame limit.
@@ -4487,26 +4481,24 @@ module.exports = class CanvasGraphController {
       return null;
     }
 
+    // Read the palette value that the Canvas colour class of Obsidian or the theme gives.
+    // This uses no plugin CSS, because Obsidian loads styles.css after onload.
     const el = doc.createElement("div");
-    el.classList.add(`mod-canvas-color-${color}`);
-    el.style.color = "var(--canvas-color, rgb(1, 2, 3))";
-    el.style.display = "none";
+    el.classList.add(`mod-canvas-color-${color}`, "cluddlegraphs-color-probe");
     doc.body.appendChild(el);
-
+    let paletteValue;
     try {
-      const resolvedColor = this.parseRgbColor((doc.defaultView ?? window).getComputedStyle(el).color);
-      return resolvedColor === UNRESOLVED_CANVAS_COLOR ? null : resolvedColor;
+      paletteValue = (doc.defaultView ?? window).getComputedStyle(el).getPropertyValue("--canvas-color").trim();
     } finally {
       this.plugin.detachElement(el);
     }
-  }
 
-  parseRgbColor(color) {
-    const match = color.match(/^rgba?\(\s*(\d+)(?:,|\s+)\s*(\d+)(?:,|\s+)\s*(\d+)/);
-    if (!match) {
+    // An empty value is a palette slot that the theme does not define.
+    if (!paletteValue) {
       return null;
     }
-    return (parseInt(match[1], 10) << 16) + (parseInt(match[2], 10) << 8) + parseInt(match[3], 10);
+    const resolvedColor = this.plugin.resolveCssColor(paletteValue, doc);
+    return resolvedColor ? this.plugin.hexToRgb(resolvedColor) : null;
   }
 
   async refreshAllGroupMembershipMetadata() {
@@ -4757,7 +4749,6 @@ class CanvasEdgeColorController {
       return;
     }
 
-    const controller = this;
     const patch = {
       hadOwnAddEdge: Object.prototype.hasOwnProperty.call(canvas, "addEdge"),
       hadOwnImportData: Object.prototype.hasOwnProperty.call(canvas, "importData"),
@@ -4767,11 +4758,12 @@ class CanvasEdgeColorController {
       patchedAddEdge: null,
       patchedImportData: null
     };
-    const patchedAddEdge = function(edge, ...args) {
-      const shouldApply = controller.shouldApplyToCreatedEdge(this, patch);
-      const result = patch.originalAddEdge.call(this, edge, ...args);
+    // Obsidian calls addEdge on this Canvas only, so the wrapper uses the Canvas from the closure.
+    const patchedAddEdge = (edge, ...args) => {
+      const shouldApply = this.shouldApplyToCreatedEdge(canvas, patch);
+      const result = patch.originalAddEdge.call(canvas, edge, ...args);
       if (shouldApply) {
-        controller.applyDefaultColorToCreatedEdge(this, edge);
+        this.applyDefaultColorToCreatedEdge(canvas, edge);
       }
       return result;
     };

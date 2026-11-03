@@ -65,7 +65,6 @@ class CanvasEdgeColorController {
       return;
     }
 
-    const controller = this;
     const patch = {
       hadOwnAddEdge: Object.prototype.hasOwnProperty.call(canvas, "addEdge"),
       hadOwnImportData: Object.prototype.hasOwnProperty.call(canvas, "importData"),
@@ -75,11 +74,12 @@ class CanvasEdgeColorController {
       patchedAddEdge: null,
       patchedImportData: null
     };
-    const patchedAddEdge = function(edge, ...args) {
-      const shouldApply = controller.shouldApplyToCreatedEdge(this, patch);
-      const result = patch.originalAddEdge.call(this, edge, ...args);
+    // Obsidian calls addEdge on this Canvas only, so the wrapper uses the Canvas from the closure.
+    const patchedAddEdge = (edge, ...args) => {
+      const shouldApply = this.shouldApplyToCreatedEdge(canvas, patch);
+      const result = patch.originalAddEdge.call(canvas, edge, ...args);
       if (shouldApply) {
-        controller.applyDefaultColorToCreatedEdge(this, edge);
+        this.applyDefaultColorToCreatedEdge(canvas, edge);
       }
       return result;
     };

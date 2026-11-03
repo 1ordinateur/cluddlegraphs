@@ -102,3 +102,8 @@
 .cluddlegraphs-canvas-connection-color-mapping .setting-item-control {
   align-items: center;
 }
+
+/* Hidden elements that the plugin reads with getComputedStyle to resolve colours. */
+.cluddlegraphs-color-probe {
+  display: none;
+}
