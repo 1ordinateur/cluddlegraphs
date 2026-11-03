@@ -50,6 +50,47 @@ function createProbeDocument(onComputedStyle) {
   return { el, doc };
 }
 
+// A document with the Canvas colour rules of Obsidian and the theme, but with no plugin styles.css.
+// Obsidian loads styles.css after onload, so the first graph rebuild can run before it.
+// A Canvas colour class gives its --canvas-color value. An element shows its inline colour, else the text colour.
+const TEXT_COLOR = "rgb(218, 218, 218)";
+function createThemeDocument(palette) {
+  const probes = [];
+  const doc = {
+    body: { appendChild() {} },
+    createElement: () => {
+      const classes = new Set();
+      const el = {
+        classes,
+        classList: {
+          add: (...names) => names.forEach((name) => classes.add(name))
+        },
+        remove() {},
+        style: {}
+      };
+      probes.push(el);
+      return el;
+    },
+    defaultView: {
+      getComputedStyle: (el) => {
+        const slotClass = [...el.classes].find((name) => name.startsWith("mod-canvas-color-"));
+        const slot = slotClass?.slice("mod-canvas-color-".length);
+        return {
+          color: el.style.color || TEXT_COLOR,
+          getPropertyValue: (name) => (name === "--canvas-color" && slot ? palette[slot] ?? "" : "")
+        };
+      }
+    }
+  };
+  return { doc, probes };
+}
+
+function createCanvasColorController() {
+  const controller = Object.create(CanvasGraphController.prototype);
+  controller.plugin = Object.create(CluddleGraphsPlugin.prototype);
+  return controller;
+}
+
 test("uses Obsidian's current getColoredQueries color-group API", () => {
   const expected = [{ query: "path:Anatomy", color: { a: 1, rgb: 0x87c517 } }];
   const controller = Object.create(CanvasGraphController.prototype);
@@ -67,29 +108,25 @@ test("uses Obsidian's current getColoredQueries color-group API", () => {
   assert.deepEqual(controller.getGraphColorQueries(engine), expected);
 });
 
-test("resolves Obsidian 1.13 full-value Canvas color variables", () => {
-  const controller = Object.create(CanvasGraphController.prototype);
-  controller.plugin = {
-    detachElement: () => {},
-    normalizeHexColor: () => null
-  };
-  const { el, doc } = createProbeDocument((classes) => {
-    assert.ok(classes.has("mod-canvas-color-9"), "the probe must have the Canvas colour class");
-    assert.ok(classes.has("cluddlegraphs-canvas-color-probe"), "the probe must get its colour from styles.css");
-    return { color: "rgb(255, 0, 0)" };
-  });
+test("resolves Obsidian 1.13 full-value Canvas color variables before styles.css loads", () => {
+  const controller = createCanvasColorController();
+  const { doc, probes } = createThemeDocument({ 9: "rgb(255, 0, 0)" });
 
   assert.equal(controller.resolveCanvasColor("9", doc), 0xff0000);
-  assert.deepEqual(el.style, {}, "the Canvas colour probe must not set a fixed inline style");
+  assert.ok(probes[0].classes.has("mod-canvas-color-9"), "the probe must have the Canvas colour class");
+  assert.deepEqual(probes[0].style, {}, "the Canvas colour probe must not set an inline style");
+});
+
+test("resolves a hex Canvas palette value", () => {
+  const controller = createCanvasColorController();
+  const { doc } = createThemeDocument({ 8: " #FF8C00" });
+
+  assert.equal(controller.resolveCanvasColor("8", doc), 0xff8c00);
 });
 
 test("gives no colour for a Canvas palette slot that the theme does not define", () => {
-  const controller = Object.create(CanvasGraphController.prototype);
-  controller.plugin = {
-    detachElement: () => {},
-    normalizeHexColor: () => null
-  };
-  const { doc } = createProbeDocument(() => ({ color: "rgb(1, 2, 3)" }));
+  const controller = createCanvasColorController();
+  const { doc } = createThemeDocument({ 9: "rgb(255, 0, 0)" });
 
   assert.equal(controller.resolveCanvasColor("42", doc), null);
 });
@@ -110,9 +147,6 @@ test("resolves a CSS colour through a hidden probe with no fixed inline style", 
   assert.equal(detached, true);
 });
 
-test("defines the colour probe styles in styles.css", () => {
-  const canvasProbe = getStylesheetRule(".cluddlegraphs-canvas-color-probe");
-  assert.match(canvasProbe, /(?:^|; )color: var\(--canvas-color, rgb\(1, 2, 3\)\);/, "an undefined slot must give the unresolved colour");
-  assert.match(canvasProbe, /(?:^|; )display: none;/);
+test("hides the colour probe with styles.css", () => {
   assert.match(getStylesheetRule(".cluddlegraphs-color-probe"), /(?:^|; )display: none;/);
 });

@@ -67,15 +67,33 @@ function countCalls(graphics, name) {
   return graphics.calls.filter(([callName]) => callName === name).length;
 }
 
-function createPaletteDocument(counter, color = "rgb(255, 0, 0)") {
+// A document whose Canvas colour classes give one --canvas-color value. It counts each read of that value.
+// An empty value is a palette slot that the theme does not define. An element shows its inline colour.
+function createPaletteDocument(counter, paletteValue = "rgb(255, 0, 0)") {
   return {
     body: { appendChild() {} },
-    createElement: () => ({ classList: { add() {} }, style: {}, remove() {} }),
+    createElement: () => {
+      const classes = new Set();
+      return {
+        classes,
+        classList: {
+          add: (...names) => names.forEach((name) => classes.add(name))
+        },
+        style: {},
+        remove() {}
+      };
+    },
     defaultView: {
-      getComputedStyle: () => {
-        counter.lookups++;
-        return { color };
-      }
+      getComputedStyle: (el) => ({
+        color: el.style.color || "rgb(218, 218, 218)",
+        getPropertyValue: (name) => {
+          if (name !== "--canvas-color" || ![...el.classes].some((className) => className.startsWith("mod-canvas-color-"))) {
+            return "";
+          }
+          counter.lookups++;
+          return paletteValue;
+        }
+      })
     }
   };
 }
@@ -710,7 +728,10 @@ test("wakes the native render loop after a rebuild only when a node or link look
     body: { appendChild() {} },
     createElement: () => ({ classList: { add() {} }, style: {}, remove() {} }),
     defaultView: {
-      getComputedStyle: () => ({ color: "rgb(255, 0, 0)" }),
+      getComputedStyle: () => ({
+        color: "rgb(255, 0, 0)",
+        getPropertyValue: (name) => (name === "--canvas-color" ? "rgb(255, 0, 0)" : "")
+      }),
       requestAnimationFrame: (callback) => frames.push(callback),
       cancelAnimationFrame() {}
     }
@@ -1232,7 +1253,7 @@ test("stops queued Canvas reloads after unload", async () => {
 test("looks up an unresolved palette colour one time in each graph rebuild", () => {
   const controller = new CanvasGraphController(createPlugin());
   const counter = { lookups: 0 };
-  const doc = createPaletteDocument(counter, "rgb(1, 2, 3)");
+  const doc = createPaletteDocument(counter, "");
   const cardA = "Board.canvas#cluddlegraphs-canvas-node-a";
   const cardB = "Board.canvas#cluddlegraphs-canvas-node-b";
   controller.hydrated = true;
